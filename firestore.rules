@@ -1,0 +1,50 @@
+rules_version = '2';
+
+// Reglas de Firestore para Beauty Virtual.
+// El backend (Admin SDK) ignora estas reglas: solo protegen el acceso directo
+// desde el navegador (SDK Web de Firebase).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Servicios: lectura publica, escritura solo desde el backend (Admin SDK) ---
+    match /services/{serviceId} {
+      allow read: if true; // catalogo publico
+      allow write: if false; // el Admin SDK no pasa por estas reglas
+    }
+
+    // --- Informacion del negocio: lectura publica ---
+    match /business_info/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // --- Usuarios: cada usuario lee su propio perfil; solo admin gestiona roles ---
+    match /users/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || isAdmin());
+      allow create: if request.auth != null && request.auth.uid == uid;
+      allow update: if request.auth != null && (request.auth.uid == uid || isAdmin());
+      allow delete: if false;
+    }
+
+    // --- Citas: el cliente ve las suyas; el profesional las asignadas; admin todas ---
+    match /appointments/{appointmentId} {
+      allow read: if request.auth != null &&
+        (resource.data.userId == request.auth.uid || isAdmin() || isAssignedEmployee());
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update: if request.auth != null &&
+        (isAdmin() || isAssignedEmployee() ||
+          (resource.data.userId == request.auth.uid && resource.data.status == 'pending'));
+      allow delete: if false;
+    }
+
+    function isAdmin() {
+      return request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isAssignedEmployee() {
+      return request.auth != null &&
+        resource.data.employeeId == request.auth.uid;
+    }
+  }
+}
