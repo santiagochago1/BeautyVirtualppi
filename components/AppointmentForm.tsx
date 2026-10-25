@@ -145,7 +145,7 @@ export default function AppointmentForm({
           <option value="">Selecciona un profesional</option>
           {employees.map((employee) => (
             <option key={employee.id || employee.uid} value={employee.id || employee.uid}>
-              {employee.displayName || employee.name || 'Profesional'}
+              {employee.displayName || 'Profesional'}
             </option>
           ))}
         </select>
