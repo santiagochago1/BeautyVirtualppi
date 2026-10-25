@@ -3,11 +3,11 @@
 /**
  * Formulario de agendamiento de citas (cliente).
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { apiRequest, getErrorMessage } from '@/lib/api';
 import { useAuth } from '@/components/AuthProvider';
 import { buildTimeSlots, todayISO } from '@/lib/format';
-import type { Appointment, Service } from '@/lib/types';
+import type { Appointment, Service, UserProfile } from '@/lib/types';
 
 export default function AppointmentForm({
   services = [],
@@ -21,6 +21,9 @@ export default function AppointmentForm({
   const { getIdToken } = useAuth();
 
   const [serviceId, setServiceId] = useState(preselectedServiceId || '');
+  const [employeeId, setEmployeeId] = useState('');
+  const [employees, setEmployees] = useState<UserProfile[]>([]);
+  const [employeesLoading, setEmployeesLoading] = useState(false);
   const [date, setDate] = useState('');
   const [time, setTime] = useState('');
   const [notes, setNotes] = useState('');
@@ -30,6 +33,30 @@ export default function AppointmentForm({
   const [appliedPreselection, setAppliedPreselection] = useState(preselectedServiceId);
 
   const timeSlots = useMemo(() => buildTimeSlots('08:00', '18:00'), []);
+
+  useEffect(() => {
+    let active = true;
+    const loadEmployees = async () => {
+      try {
+        setEmployeesLoading(true);
+        const token = await getIdToken().catch(() => null);
+        const data = await apiRequest<{ employees?: UserProfile[]; users?: UserProfile[] }>('/employees', {
+          token,
+        });
+        if (!active) return;
+        setEmployees(data.employees || data.users || []);
+      } catch {
+        if (!active) return;
+        setEmployees([]);
+      } finally {
+        if (active) setEmployeesLoading(false);
+      }
+    };
+    void loadEmployees();
+    return () => {
+      active = false;
+    };
+  }, [getIdToken]);
 
   // Si el servicio preseleccionado cambia, se refleja en el selector durante
   // el render (en vez de un efecto) para no provocar renders en cascada.
@@ -43,8 +70,8 @@ export default function AppointmentForm({
     setError(null);
     setSuccess(null);
 
-    if (!serviceId || !date || !time) {
-      setError('Selecciona el servicio, la fecha y la hora.');
+    if (!serviceId || !date || !time || !employeeId) {
+      setError('Selecciona el servicio, el profesional, la fecha y la hora.');
       return;
     }
 
@@ -55,13 +82,14 @@ export default function AppointmentForm({
       const data = await apiRequest<{ appointment: Appointment }>('/appointments', {
         method: 'POST',
         token,
-        body: { serviceId, date, time, notes },
+        body: { serviceId, date, time, notes, employeeId },
       });
 
       setSuccess(`¡Listo! Tu cita quedo registrada para el ${date} a las ${time}.`);
       setDate('');
       setTime('');
       setNotes('');
+      setEmployeeId('');
       onCreated?.(data.appointment);
     } catch (requestError: unknown) {
       setError(getErrorMessage(requestError, 'No fue posible agendar la cita.'));
@@ -100,6 +128,28 @@ export default function AppointmentForm({
             </option>
           ))}
         </select>
+      </div>
+
+      <div>
+        <label htmlFor="employee" className="label-field">
+          Profesional
+        </label>
+        <select
+          id="employee"
+          value={employeeId}
+          onChange={(event) => setEmployeeId(event.target.value)}
+          required
+          disabled={employeesLoading}
+          className="input-field"
+        >
+          <option value="">Selecciona un profesional</option>
+          {employees.map((employee) => (
+            <option key={employee.id || employee.uid} value={employee.id || employee.uid}>
+              {employee.displayName || employee.name || 'Profesional'}
+            </option>
+          ))}
+        </select>
+        {employeesLoading && <p className="mt-1 text-xs text-slate-500">Cargando profesionales...</p>}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">

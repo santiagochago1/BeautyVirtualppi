@@ -20,6 +20,11 @@ export default function HomePage() {
   const [business, setBusiness] = useState<BusinessInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isClient, setIsClient] = useState(false);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -260,7 +265,7 @@ export default function HomePage() {
           ))}
         </div>
 
-        {!isConfigured && (
+        {isClient && !isConfigured && (
           <p className="mt-8 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-center text-sm text-amber-700">
             ⚠ Configura las variables <code className="font-mono">NEXT_PUBLIC_FIREBASE_*</code> en{' '}
             <code className="font-mono">.env.local</code> para activar el inicio de sesion y el asistente virtual.

@@ -6,7 +6,7 @@
  * El registro crea el usuario en Firebase Auth; el rol inicial es 'client' y
  * solo un administrador puede promoverlo a 'employee' o 'admin'.
  */
-import { useState, Suspense } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/components/AuthProvider';
@@ -35,6 +35,13 @@ function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const [isClient, setIsClient] = useState(false);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+
+
   const isRegister = mode === 'register';
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -60,6 +67,11 @@ function LoginForm() {
       setIsSubmitting(false);
     }
   };
+
+  // Si no estamos en el cliente todavía, mostramos un mensaje de carga o nada
+  if (!isClient) {
+    return <p className="text-sm text-slate-500">Cargando...</p>;
+  }
 
   if (!isConfigured) {
     return (

@@ -83,7 +83,7 @@ export const createAppointment = async ({
   if (conflict) {
     throw new AppError(
       employeeId
-        ? 'Ese horario ya esta ocupado para el profesional seleccionado. Por favor elige otra hora.'
+        ? 'El profesional seleccionado no está disponible en ese horario'
         : 'Ese horario ya esta tomado. Por favor elige otra hora.',
       409,
     );
@@ -250,7 +250,7 @@ export const assignEmployee = async (
       employeeId,
     });
     if (conflict && conflict.id !== id) {
-      throw new AppError('El profesional ya tiene una cita en ese horario.', 409);
+      throw new AppError('El profesional seleccionado no está disponible en ese horario', 409);
     }
   }
 
