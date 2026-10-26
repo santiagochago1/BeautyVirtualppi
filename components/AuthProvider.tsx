@@ -90,9 +90,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error('Firebase no esta configurado. Revisa las variables NEXT_PUBLIC_FIREBASE_*');
       }
       const credential = await signInWithEmailAndPassword(auth, email, password);
+      await credential.user.getIdToken(true); 
       await loadProfile(credential.user);
       return credential.user;
     },
+
+    
     [loadProfile],
   );
 
