@@ -13,12 +13,14 @@ export const SALON_UTC_OFFSET = '-05:00';
 
 const pad = (value: number) => String(value).padStart(2, '0');
 
+// Bogota es UTC-5: la hora local se obtiene restando el offset a la hora UTC.
+const SALON_OFFSET_MS = 5 * 60 * 60 * 1000;
+
 /** Devuelve 'YYYY-MM-DD' de una fecha ISO o Date en hora local del salon. */
 export const toSalonDate = (value: Date | string = new Date()): string | null => {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  // Construimos la fecha usando el offset del salon (-05:00).
-  const local = new Date(date.getTime() + 5 * 60 * 60 * 1000);
+  const local = new Date(date.getTime() - SALON_OFFSET_MS);
   return `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}`;
 };
 
@@ -26,7 +28,7 @@ export const toSalonDate = (value: Date | string = new Date()): string | null =>
 export const toSalonTime = (value: Date | string = new Date()): string | null => {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  const local = new Date(date.getTime() + 5 * 60 * 60 * 1000);
+  const local = new Date(date.getTime() - SALON_OFFSET_MS);
   return `${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}`;
 };
 

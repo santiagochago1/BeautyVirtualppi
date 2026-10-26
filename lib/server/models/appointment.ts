@@ -79,6 +79,16 @@ export const createAppointment = async ({
   const startsAt = salonStartToIso(date, time);
   if (!startsAt) throw new AppError('No fue posible interpretar la fecha y hora de la cita.', 400);
 
+  // --- NUEVA VALIDACIÓN DE FECHA PASADA ---
+  const nowMs = new Date().getTime();
+  const appointmentMs = new Date(startsAt).getTime();
+  
+  // Si la fecha de la cita es menor a la fecha actual, lanza error.
+  if (appointmentMs < nowMs) {
+    throw new AppError('No puedes agendar citas en el pasado.', 400);
+  }
+  // ----------------------------------------
+
   const conflict = await findConflict({ date, time, employeeId });
   if (conflict) {
     throw new AppError(
