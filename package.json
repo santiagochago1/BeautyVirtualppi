@@ -2,6 +2,11 @@
   "name": "beauty_virual_ppi",
   "version": "0.1.0",
   "private": true,
+  "overrides": {
+    "firebase-admin": {
+      "jwks-rsa": "3.2.2"
+    }
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
