@@ -64,10 +64,9 @@ export default function AppointmentList({
 
       {appointments.map((appointment) => {
         const canCancel =
-          (showClient || isAdmin) &&
           appointment.status !== 'cancelled' &&
           appointment.status !== 'completed' &&
-          (isAdmin || role === 'client');
+          (role === 'client' || (isAdmin && showClient));
 
         return (
           <article key={appointment.id} className="rounded-2xl border border-brand-100 bg-white p-4 shadow-sm">
@@ -81,9 +80,9 @@ export default function AppointmentList({
                 {showClient && appointment.userName && (
                   <p className="mt-1 text-xs text-slate-500">Cliente: {appointment.userName}</p>
                 )}
-                {appointment.employeeName && (
-                  <p className="mt-1 text-xs text-slate-500">Profesional: {appointment.employeeName}</p>
-                )}
+                <p className="mt-1 text-xs text-slate-500">
+                  Profesional: <strong className="font-medium text-slate-700">{appointment.employeeName || 'Por asignar'}</strong>
+                </p>
                 {appointment.notes && <p className="mt-2 text-xs italic text-slate-500">“{appointment.notes}”</p>}
               </div>
 

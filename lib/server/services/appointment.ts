@@ -86,10 +86,11 @@ export const listAppointmentsFor = async (
 ): Promise<Appointment[]> => {
   if (user.role === 'admin') return listAppointments(filters);
   if (user.role === 'employee') {
-    const { from, to } = filters;
-    return listAppointmentsByEmployee(user.uid, { from, to });
+    const { status, from, to } = filters;
+    return listAppointmentsByEmployee(user.uid, { status, from, to });
   }
-  return listAppointmentsByUser(user.uid);
+  const { status, from, to } = filters;
+  return listAppointmentsByUser(user.uid, { status, from, to });
 };
 
 /** Cambia el estado de una cita validando permisos y transiciones. */

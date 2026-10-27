@@ -5,6 +5,7 @@
  */
 import { useCallback, useMemo, useState } from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import AppointmentCalendar from '@/components/AppointmentCalendar';
 import AppointmentList from '@/components/AppointmentList';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import StatusBadge from '@/components/StatusBadge';
@@ -22,6 +23,7 @@ const FILTERS = [
 
 function EmployeeAgenda() {
   const { getIdToken, role, profile } = useAuth();
+  const [displayMode, setDisplayMode] = useState<'calendar' | 'list'>('calendar');
   const [filter, setFilter] = useState('today');
 
   const fetchAppointments = useCallback(async (): Promise<Appointment[]> => {
@@ -70,33 +72,66 @@ function EmployeeAgenda() {
           <p className="text-xs font-semibold uppercase tracking-wide text-brand-600">
             {role === 'admin' ? 'Vista de administrador' : 'Profesional'}
           </p>
-          <h1 className="mt-1 font-display text-3xl font-bold text-brand-800">Agenda del dia</h1>
+          <h1 className="mt-1 font-display text-3xl font-bold text-brand-800">Agenda diaria</h1>
           <p className="mt-2 text-slate-600">
             {role === 'admin'
-              ? 'Todas las citas registradas en el salon.'
-              : `Hola ${profile?.name?.split(' ')[0] || ''}, estas son tus citas asignadas.`}
+              ? 'Vista horaria con columnas paralelas por cada profesional y duraciones proporcionales.'
+              : `Hola ${profile?.name?.split(' ')[0] || ''}, esta es tu agenda horaria del dia.`}
           </p>
         </div>
 
-        <div className="flex gap-2 rounded-full border border-brand-100 bg-white p-1">
-          {FILTERS.map((item) => (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex gap-1 rounded-full border border-brand-100 bg-white p-1">
             <button
-              key={item.id}
               type="button"
-              onClick={() => setFilter(item.id)}
+              onClick={() => setDisplayMode('calendar')}
               className={`rounded-full px-4 py-1.5 text-sm font-medium transition ${
-                filter === item.id ? 'bg-gradient-to-r from-brand-500 to-plum-600 text-white' : 'text-slate-600 hover:text-brand-700'
+                displayMode === 'calendar'
+                  ? 'bg-gradient-to-r from-brand-500 to-plum-600 text-white'
+                  : 'text-slate-600 hover:text-brand-700'
               }`}
             >
-              {item.label}
+              🕒 Agenda horaria
             </button>
-          ))}
+            <button
+              type="button"
+              onClick={() => setDisplayMode('list')}
+              className={`rounded-full px-4 py-1.5 text-sm font-medium transition ${
+                displayMode === 'list'
+                  ? 'bg-gradient-to-r from-brand-500 to-plum-600 text-white'
+                  : 'text-slate-600 hover:text-brand-700'
+              }`}
+            >
+              📋 Lista
+            </button>
+          </div>
+
+          {displayMode === 'list' && (
+            <div className="flex gap-2 rounded-full border border-brand-100 bg-white p-1">
+              {FILTERS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setFilter(item.id)}
+                  className={`rounded-full px-4 py-1.5 text-sm font-medium transition ${
+                    filter === item.id
+                      ? 'bg-gradient-to-r from-brand-500 to-plum-600 text-white'
+                      : 'text-slate-600 hover:text-brand-700'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </header>
 
       {error && <p className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
 
-      {filtered.length === 0 ? (
+      {displayMode === 'calendar' ? (
+        <AppointmentCalendar appointments={appointments} onUpdated={() => void reload()} />
+      ) : filtered.length === 0 ? (
         <div className="card text-sm text-slate-500">No hay citas para mostrar en este filtro.</div>
       ) : (
         <div className="space-y-8">
@@ -117,6 +152,9 @@ function EmployeeAgenda() {
                         <p className="mt-1 text-sm text-slate-500">
                           Cliente: <strong className="font-semibold text-slate-700">{appointment.userName}</strong>
                         </p>
+                        {appointment.employeeName && role === 'admin' && (
+                          <p className="text-xs text-brand-700">Profesional: {appointment.employeeName}</p>
+                        )}
                         {appointment.userPhone && <p className="text-xs text-slate-500">Tel: {appointment.userPhone}</p>}
                         {appointment.notes && <p className="mt-2 text-xs italic text-slate-500">“{appointment.notes}”</p>}
                       </div>

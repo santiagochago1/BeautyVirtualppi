@@ -42,7 +42,7 @@ const MAX_HISTORY = 10;
 const MAX_INPUT_LENGTH = 1000;
 
 export default function ChatbotWidget() {
-  const { isAuthenticated, isConfigured, getIdToken } = useAuth();
+  const { isAuthenticated, isConfigured, role, getIdToken } = useAuth();
 
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
@@ -182,6 +182,10 @@ export default function ChatbotWidget() {
       sendMessage();
     }
   };
+
+  if (role === 'admin' || role === 'employee') {
+    return null;
+  }
 
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-3 sm:bottom-6 sm:right-6">

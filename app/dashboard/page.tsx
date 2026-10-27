@@ -3,7 +3,8 @@
 /**
  * Panel del cliente: agendar citas y consultar su historial.
  */
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import AppointmentForm from '@/components/AppointmentForm';
 import AppointmentList from '@/components/AppointmentList';
@@ -19,7 +20,14 @@ interface DashboardData {
 }
 
 function DashboardContent() {
+  const router = useRouter();
   const { profile, role, roleLabel, getIdToken } = useAuth();
+
+  useEffect(() => {
+    if (role === 'admin' || role === 'employee') {
+      router.replace('/employee');
+    }
+  }, [role, router]);
 
   const fetchDashboard = useCallback(async (): Promise<DashboardData> => {
     const token = await getIdToken();
@@ -76,7 +84,7 @@ function DashboardContent() {
 
         <div className="space-y-4">
           <h2 className="font-display text-lg font-semibold text-brand-800">Mis citas</h2>
-          <AppointmentList appointments={appointments} onUpdated={() => void reload()} />
+          <AppointmentList appointments={appointments} onUpdated={() => void reload()} showClient={false} />
         </div>
       </div>
     </div>

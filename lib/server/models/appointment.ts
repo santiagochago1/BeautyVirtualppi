@@ -152,19 +152,38 @@ export const findConflict = async ({
 };
 
 /** Citas de un cliente. */
-export const listAppointmentsByUser = async (userId: string): Promise<Appointment[]> => {
+export const listAppointmentsByUser = async (
+  userId: string,
+  {
+    status = null,
+    from = null,
+    to = null,
+  }: { status?: AppointmentStatus | null; from?: string | null; to?: string | null } = {},
+): Promise<Appointment[]> => {
   const db = assertFirebaseReady();
   const snapshot = await db
     .collection(APPOINTMENTS_COLLECTION)
     .where('userId', '==', userId)
     .get();
-  return sortByStart(snapshot.docs.map((doc) => serialize(doc.id, doc.data() as Record<string, unknown>)), 'desc');
+  const list = snapshot.docs
+    .map((doc) => serialize(doc.id, doc.data() as Record<string, unknown>))
+    .filter((item: Appointment) => {
+      if (status && item.status !== status) return false;
+      if (from && item.date < from) return false;
+      if (to && item.date > to) return false;
+      return true;
+    });
+  return sortByStart(list, 'desc');
 };
 
 /** Citas asignadas a un profesional, opcionalmente dentro de un rango de fechas. */
 export const listAppointmentsByEmployee = async (
   employeeId: string,
-  { from = null, to = null }: { from?: string | null; to?: string | null } = {},
+  {
+    status = null,
+    from = null,
+    to = null,
+  }: { status?: AppointmentStatus | null; from?: string | null; to?: string | null } = {},
 ): Promise<Appointment[]> => {
   const db = assertFirebaseReady();
   // Solo igualdad en un campo: evita la necesidad de indices compuestos.
@@ -173,11 +192,15 @@ export const listAppointmentsByEmployee = async (
     .where('employeeId', '==', employeeId)
     .get();
 
-  const list = snapshot.docs.map((doc) => serialize(doc.id, doc.data() as Record<string, unknown>));
-  return sortByStart(
-    list.filter((item: Appointment) => (from && to ? item.date >= from && item.date <= to : true)),
-    'asc',
-  );
+  const list = snapshot.docs
+    .map((doc) => serialize(doc.id, doc.data() as Record<string, unknown>))
+    .filter((item: Appointment) => {
+      if (status && item.status !== status) return false;
+      if (from && item.date < from) return false;
+      if (to && item.date > to) return false;
+      return true;
+    });
+  return sortByStart(list, 'asc');
 };
 
 /** Todas las citas (admin) con filtros opcionales. */
@@ -198,7 +221,8 @@ export const listAppointments = async ({
   const list = snapshot.docs.map((doc) => serialize(doc.id, doc.data() as Record<string, unknown>)).filter((item: Appointment) => {
     if (status && item.status !== status) return false;
     if (employeeId && item.employeeId !== employeeId) return false;
-    if (from && to && (item.date < from || item.date > to)) return false;
+    if (from && item.date < from) return false;
+    if (to && item.date > to) return false;
     return true;
   });
 

@@ -16,10 +16,9 @@ const NAV_LINKS = [
 
 const ROLE_LINKS: Record<string, Array<{ href: string; label: string }>> = {
   client: [{ href: '/dashboard', label: 'Mi agenda' }],
-  employee: [{ href: '/employee', label: 'Mi agenda' }],
+  employee: [{ href: '/employee', label: 'Agenda diaria' }],
   admin: [
-    { href: '/dashboard', label: 'Mi agenda' },
-    { href: '/employee', label: 'Agenda del dia' },
+    { href: '/employee', label: 'Agenda diaria' },
     { href: '/admin', label: 'Administracion' },
   ],
 };
@@ -30,7 +29,11 @@ export default function Navbar() {
   const { isAuthenticated, profile, role, roleLabel, signOut } = useAuth();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
-  const links = [...NAV_LINKS, ...(role ? ROLE_LINKS[role] || [] : [])];
+  const isStaff = role === 'admin' || role === 'employee';
+  const links = isStaff
+    ? ROLE_LINKS[role] || []
+    : [...NAV_LINKS, ...(role ? ROLE_LINKS[role] || [] : [])];
+  const brandHref = isStaff ? '/employee' : '/';
 
   const handleSignOut = async () => {
     await signOut();
@@ -44,7 +47,7 @@ export default function Navbar() {
   return (
     <header className="sticky top-0 z-40 border-b border-brand-100 bg-white/85 backdrop-blur">
       <nav className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
-        <Link href="/" className="flex items-center gap-2" onClick={() => setIsMenuOpen(false)}>
+        <Link href={brandHref} className="flex items-center gap-2" onClick={() => setIsMenuOpen(false)}>
           <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-plum-600 text-lg">
             💅
           </span>
