@@ -11,42 +11,58 @@ import { getBusinessInfo } from '@/lib/server/models/business-info';
 import { DEFAULT_BUSINESS_INFO, DEFAULT_SERVICES } from '@/lib/server/defaults';
 import { listAppointmentsByUser, listAppointmentsByEmployee } from '@/lib/server/models/appointment';
 import { todaySalon, addDays } from '@/lib/server/datetime';
+import { normalizeBusinessHours } from '@/lib/schedule-utils';
 import { createLogger } from '@/lib/server/logger';
 import type { AuthUser } from '@/lib/server/auth';
-import type { BusinessInfo, Service } from '@/lib/types';
+import type { BusinessHour, BusinessInfo, Service, SpecialDate } from '@/lib/types';
 
 const logger = createLogger('context');
 
-const formatPrice = (value: unknown): string => `$${Number(value || 0).toLocaleString('es-CO')}`;
+const formatPrice = (value: unknown): string => `$${Number(value || 0).toLocaleString('es-CO')} COP`;
 
-const formatHours = (hours: Array<{ day: string; open: string; close: string }> = []): string =>
-  hours
+const formatHours = (hours: BusinessHour[] = []): string => {
+  const normalized = normalizeBusinessHours(hours);
+  return normalized
     .map((item) => {
-      const cerrado = !item.open || !item.close || item.open === '00:00';
-      return `- ${item.day}: ${cerrado ? 'Cerrado' : `${item.open} a ${item.close}`}`;
+      const openTime = item.openTime || item.open;
+      const closeTime = item.closeTime || item.close;
+      const cerrado = item.isOpen === false || !openTime || !closeTime || openTime === '00:00';
+      return `- ${item.day}: ${cerrado ? 'Cerrado' : `${openTime} a ${closeTime}`}`;
     })
     .join('\n');
+};
 
-/** Catalogo de servicios (nombre, duracion, precio, descripcion). */
+const formatSpecialDates = (specialDates: SpecialDate[] = []): string => {
+  if (!Array.isArray(specialDates) || specialDates.length === 0) return '';
+  const lines = specialDates.map((item) =>
+    item.isClosed
+      ? `- ${item.date}: Cerrado todo el día (${item.note || 'Festivo / Excepción'})`
+      : `- ${item.date}: Horario especial de ${item.customOpenTime} a ${item.customCloseTime} (${item.note || 'Jornada especial'})`,
+  );
+  return `\nFECHAS ESPECIALES Y FESTIVOS:\n${lines.join('\n')}`;
+};
+
+/** Catalogo de servicios activos (nombre, duracion, precio, descripcion). */
 const buildServicesBlock = (services: Service[]): string => {
-  if (!services.length) return 'CATALOGO DE SERVICIOS: (no hay servicios registrados)';
+  const activeServices = services.filter((s) => s.active !== false);
+  if (!activeServices.length) return 'CATÁLOGO DE SERVICIOS ACTIVOS: (no hay servicios activos registrados)';
 
-  const lines = services.map(
+  const lines = activeServices.map(
     (service) =>
-      `- ${service.name} | categoria: ${service.category || 'General'} | duracion: ${service.durationMinutes} min | precio: ${formatPrice(
+      `- ${service.name} | Categoría: ${service.category || 'General'} | Duración: ${service.durationMinutes} minutos | Precio: ${formatPrice(
         service.price,
-      )}${service.description ? ` | descripcion: ${service.description}` : ''}`,
+      )}${service.description ? ` | Descripción: ${service.description}` : ''}`,
   );
 
-  return `CATALOGO DE SERVICIOS:\n${lines.join('\n')}`;
+  return `CATÁLOGO DE SERVICIOS ACTIVOS (${activeServices.length} servicios):\n${lines.join('\n')}`;
 };
 
 /** Informacion del negocio (contacto, horarios, politicas). */
 const buildBusinessBlock = (business: BusinessInfo): string => {
   const contact = [
-    `- Nombre: ${business.name}`,
-    `- Direccion: ${business.address}, ${business.city}, ${business.department}`,
-    `- Telefono: ${business.phone}`,
+    `- Nombre: ${business.name || 'Beauty Virtual / Beauty Salón'}`,
+    `- Ubicación: ${business.address}, ${business.city || 'Barbosa'}, ${business.department || 'Antioquia'}`,
+    `- Teléfono: ${business.phone}`,
     `- WhatsApp: ${business.whatsapp}`,
     `- Correo: ${business.email}`,
     business.instagram ? `- Instagram: ${business.instagram}` : null,
@@ -59,19 +75,26 @@ const buildBusinessBlock = (business: BusinessInfo): string => {
     .join('\n');
 
   return [
-    'INFORMACION DEL NEGOCIO:',
+    'INFORMACIÓN DEL NEGOCIO:',
     contact,
     '',
-    'HORARIOS DE ATENCION:',
+    'HORARIOS DE ATENCIÓN SEMANAL:',
     formatHours(business.hours),
+    formatSpecialDates(business.specialDates),
     '',
-    'POLITICAS:',
+    'POLÍTICAS DEL SALÓN:',
     policies,
-  ].join('\n');
+  ]
+    .filter((section) => section !== null)
+    .join('\n');
 };
 
 /** Citas del usuario (cliente) o agenda asignada (empleado). */
-const buildAppointmentsBlock = async (user: AuthUser): Promise<string> => {
+const buildAppointmentsBlock = async (user?: AuthUser | null): Promise<string> => {
+  if (!user || !user.uid) {
+    return 'ESTADO DE SESIÓN DEL VISITANTE: El usuario aún no ha iniciado sesión. Si desea agendar una cita, invítalo amablemente a pulsar "Agendar mi cita" o "Iniciar sesión" para elegir servicio, profesional, fecha y hora.';
+  }
+
   try {
     const today = todaySalon() ?? '';
     const limit = addDays(today, 90);
@@ -95,7 +118,7 @@ const buildAppointmentsBlock = async (user: AuthUser): Promise<string> => {
         )} | estado: ${item.status}${item.employeeName ? ` | profesional: ${item.employeeName}` : ''} | id: ${item.id}`,
     );
 
-    return `MIS CITAS:\n${lines.length ? lines.join('\n') : 'El usuario no tiene citas registradas.'}`;
+    return `MIS CITAS:\n${lines.length ? lines.join('\n') : 'El usuario no tiene citas registradas aún.'}`;
   } catch (error) {
     logger.warn(
       `No fue posible cargar las citas del usuario para el contexto: ${(error as Error)?.message}`,
@@ -114,9 +137,7 @@ export interface ChatContext {
 /**
  * Construye el contexto completo en texto plano.
  */
-export const buildChatContext = async (user: AuthUser): Promise<ChatContext> => {
-  // Si alguna fuente falla se continua con los valores por defecto: la IA nunca
-  // debe quedarse sin contexto, pero tampoco inventar informacion.
+export const buildChatContext = async (user?: AuthUser | null): Promise<ChatContext> => {
   const [businessResult, servicesResult] = await Promise.allSettled([
     getBusinessInfo(),
     listServices({ includeInactive: false }),
@@ -125,7 +146,9 @@ export const buildChatContext = async (user: AuthUser): Promise<ChatContext> => 
   const business: BusinessInfo =
     businessResult.status === 'fulfilled' ? businessResult.value : { ...DEFAULT_BUSINESS_INFO };
   const services: Service[] =
-    servicesResult.status === 'fulfilled' ? servicesResult.value : DEFAULT_SERVICES;
+    servicesResult.status === 'fulfilled' && servicesResult.value.length > 0
+      ? servicesResult.value
+      : DEFAULT_SERVICES;
 
   if (businessResult.status === 'rejected') {
     logger.warn(`Informacion del negocio no disponible: ${businessResult.reason?.message}`);
@@ -141,7 +164,7 @@ export const buildChatContext = async (user: AuthUser): Promise<ChatContext> => 
     services,
     appointments,
     text: [
-      '=== DATOS VERIFICADOS DEL NEGOCIO (fuente: base de datos) ===',
+      '=== DATOS VERIFICADOS DE BEAUTY VIRTUAL (fuente: base de datos en tiempo real) ===',
       buildBusinessBlock(business),
       '',
       buildServicesBlock(services),
@@ -155,14 +178,18 @@ export const buildChatContext = async (user: AuthUser): Promise<ChatContext> => 
 /**
  * Datos del usuario en texto (para el prompt).
  */
-export const buildUserBlock = (user: AuthUser): string =>
-  [
-    'DATOS DEL USUARIO EN SESION:',
-    `- Nombre: ${user.name || 'Usuario'}`,
+export const buildUserBlock = (user?: AuthUser | null): string => {
+  if (!user || !user.uid) {
+    return 'DATOS DEL USUARIO: Visitante en la página web (sin sesión iniciada).';
+  }
+  return [
+    'DATOS DEL USUARIO EN SESIÓN:',
+    `- Nombre: ${user.name || 'Cliente'}`,
     `- Rol: ${user.role}`,
-    user.email ? `- Correo: ${user.email}` : null,
+    user.phone ? `- Teléfono: ${user.phone}` : null,
   ]
     .filter((line): line is string => Boolean(line))
     .join('\n');
+};
 
 export default buildChatContext;

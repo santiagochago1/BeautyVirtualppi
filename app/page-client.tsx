@@ -6,7 +6,7 @@
  * Muestra el catalogo de servicios y la informacion del negocio consultada
  * en tiempo real desde la API (Firestore), y guia al agendamiento.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { apiRequest, getErrorMessage } from '@/lib/api';
@@ -14,17 +14,35 @@ import { useAuth } from '@/components/AuthProvider';
 import ServiceCard from '@/components/ServiceCard';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { formatCurrency } from '@/lib/format';
-import type { BusinessInfo, Service } from '@/lib/types';
+import type { BusinessInfo, ChatTurn, Service } from '@/lib/types';
+
+interface LandingChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+}
 
 export default function HomePage() {
   const router = useRouter();
-  const { isAuthenticated, isConfigured, role, loading: authLoading } = useAuth();
+  const { isAuthenticated, isConfigured, role, loading: authLoading, getIdToken } = useAuth();
   const isStaff = role === 'admin' || role === 'employee';
   const [services, setServices] = useState<Service[]>([]);
   const [business, setBusiness] = useState<BusinessInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isClient, setIsClient] = useState(false);
+
+  // Estado del chat interactivo de la Landing Page
+  const [chatMessages, setChatMessages] = useState<LandingChatMessage[]>([
+    {
+      id: 'welcome-landing',
+      role: 'assistant',
+      text: '¡Hola! ✨ Soy la recepcionista virtual de Beauty Virtual en Barbosa, Antioquia. Pregúntame por precios, horarios o cómo agendar tu cita.',
+    },
+  ]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setIsClient(true);
@@ -77,6 +95,67 @@ export default function HomePage() {
       ? '/employee'
       : '/dashboard';
   const facialService = services.find((service) => service.id === 'limpieza-facial-profunda');
+
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages, chatLoading]);
+
+  const sendLandingChat = async (textOverride?: string) => {
+    const message = (textOverride ?? chatInput).trim();
+    if (!message || chatLoading) return;
+
+    const userMsg: LandingChatMessage = {
+      id: `lu-${Date.now()}`,
+      role: 'user',
+      text: message,
+    };
+
+    const history: ChatTurn[] = chatMessages
+      .filter((m) => m.id !== 'welcome-landing')
+      .slice(-10)
+      .map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        text: m.text,
+      }));
+
+    setChatInput('');
+    setChatMessages((prev) => [...prev, userMsg]);
+    setChatLoading(true);
+
+    try {
+      const token = await getIdToken().catch(() => null);
+      const res = await apiRequest<{ reply: string }>('/chat', {
+        method: 'POST',
+        token,
+        body: { message, history },
+      });
+
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `la-${Date.now()}`,
+          role: 'assistant',
+          text: res.reply,
+        },
+      ]);
+    } catch (err: unknown) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: `le-${Date.now()}`,
+          role: 'assistant',
+          text: getErrorMessage(
+            err,
+            'En este momento no pude procesar tu mensaje. Intenta nuevamente en unos segundos.',
+          ),
+        },
+      ]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
 
   if (isAuthenticated && isStaff) {
     return (
@@ -137,33 +216,122 @@ export default function HomePage() {
               </dl>
             </div>
 
-            {/* Tarjeta ilustrativa */}
+            {/* Tarjeta interactiva del Asistente Virtual en la Landing Page */}
             <div className="relative animate-pop-in">
-              <div className="rounded-3xl border border-brand-100 bg-white/90 p-6 shadow-chat backdrop-blur">
-                <div className="flex items-center gap-3">
-                  <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-plum-600 text-2xl">
-                    💅
+              <div className="rounded-3xl border border-brand-100 bg-white/95 p-6 shadow-chat backdrop-blur">
+                <div className="flex items-center justify-between gap-3 border-b border-brand-100 pb-4">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-plum-600 text-2xl text-white">
+                      💅
+                    </span>
+                    <div>
+                      <p className="font-display text-lg font-semibold text-brand-800">Asistente virtual</p>
+                      <p className="text-xs text-slate-500">
+                        Recepcionista IA · Precios, horarios y citas en Barbosa
+                      </p>
+                    </div>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" /> En línea
                   </span>
-                  <div>
-                    <p className="font-display text-lg font-semibold text-brand-800">Asistente virtual</p>
-                    <p className="text-sm text-slate-500">Responde sobre servicios, precios y horarios</p>
-                  </div>
                 </div>
 
-                <div className="mt-5 space-y-3 text-sm">
-                  <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-brand-50 px-4 py-2.5 text-slate-700">
-                    ¿Cuánto cuesta la limpieza facial profunda?
-                  </div>
-                  <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-gradient-to-br from-brand-500 to-plum-600 px-4 py-2.5 text-white">
-                    {facialService
-                      ? `Cuesta ${formatCurrency(facialService.price)} y dura ${facialService.durationMinutes} minutos. ¿La agendo?`
-                      : 'Cuesta $120.000 COP y dura 60 minutos. ¿La agendo?'}
-                  </div>
+                {/* Historial de mensajes */}
+                <div
+                  ref={chatScrollRef}
+                  className="chat-scroll mt-4 max-h-64 min-h-[180px] space-y-3 overflow-y-auto pr-1 text-sm"
+                  role="log"
+                  aria-live="polite"
+                >
+                  {chatMessages.length === 1 && facialService && (
+                    <div className="rounded-2xl bg-brand-50/60 px-3.5 py-2 text-xs text-slate-500">
+                      💡 Ejemplo: la <strong>{facialService.name}</strong> cuesta{' '}
+                      {formatCurrency(facialService.price)} ({facialService.durationMinutes} min).
+                    </div>
+                  )}
+
+                  {chatMessages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={
+                        msg.role === 'user'
+                          ? 'ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-gradient-to-br from-brand-500 to-plum-600 px-4 py-2.5 text-white shadow-xs'
+                          : 'max-w-[88%] whitespace-pre-wrap rounded-2xl rounded-bl-md border border-brand-100 bg-brand-50/70 px-4 py-2.5 text-slate-700'
+                      }
+                    >
+                      {msg.text}
+                    </div>
+                  ))}
+
+                  {chatLoading && (
+                    <div className="inline-flex items-center gap-2 rounded-2xl rounded-bl-md border border-brand-100 bg-white px-4 py-2.5 shadow-xs">
+                      <span className="flex items-center gap-1">
+                        <span
+                          className="h-2 w-2 animate-bounce-dot rounded-full bg-brand-400"
+                          style={{ animationDelay: '0ms' }}
+                        />
+                        <span
+                          className="h-2 w-2 animate-bounce-dot rounded-full bg-brand-400"
+                          style={{ animationDelay: '150ms' }}
+                        />
+                        <span
+                          className="h-2 w-2 animate-bounce-dot rounded-full bg-brand-400"
+                          style={{ animationDelay: '300ms' }}
+                        />
+                      </span>
+                      <span className="text-xs font-medium text-slate-400">Escribiendo...</span>
+                    </div>
+                  )}
                 </div>
 
-                <p className="mt-5 text-center text-xs text-slate-400">
-                  Pulsa el boton flotante para hablar con el asistente 💬
-                </p>
+                {/* Sugerencias rápidas */}
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {[
+                    '¿Cuánto cuesta la limpieza facial?',
+                    '¿Cuáles son los horarios?',
+                    '¿Cómo agendo mi cita?',
+                  ].map((prompt) => (
+                    <button
+                      key={prompt}
+                      type="button"
+                      disabled={chatLoading}
+                      onClick={() => void sendLandingChat(prompt)}
+                      className="rounded-full border border-brand-200 bg-brand-50/50 px-3 py-1 text-[11px] font-medium text-brand-700 transition hover:bg-brand-100 disabled:opacity-50"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Input y botón de enviar conectado a POST /api/chat */}
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void sendLandingChat();
+                  }}
+                  className="mt-3 flex items-center gap-2 border-t border-brand-100 pt-3"
+                >
+                  <label htmlFor="landing-chat-input" className="sr-only">
+                    Pregunta al asistente virtual
+                  </label>
+                  <input
+                    id="landing-chat-input"
+                    type="text"
+                    value={chatInput}
+                    disabled={chatLoading}
+                    onChange={(event) => setChatInput(event.target.value)}
+                    placeholder="Escribe tu pregunta sobre servicios o precios..."
+                    className="input-field py-2 text-xs"
+                  />
+                  <button
+                    type="submit"
+                    disabled={chatLoading || !chatInput.trim()}
+                    aria-label="Enviar mensaje al asistente"
+                    className="inline-flex h-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-brand-500 to-plum-600 px-4 text-xs font-semibold text-white shadow-xs transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Enviar
+                  </button>
+                </form>
               </div>
             </div>
           </div>

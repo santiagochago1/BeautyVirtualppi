@@ -2,9 +2,8 @@
  * Servicio de IA (Google Gemini).
  *
  * - La API key vive EXCLUSIVAMENTE en el backend (process.env.GEMINI_API_KEY).
- * - El System Instruction se arma con datos REALES traidos de Firestore
- *   (ver `context.ts`) para evitar alucinaciones.
- * - Manejo de timeouts, excepciones y errores de cuota/sobrecarga.
+ * - El System Instruction se arma dinámicamente con la lista de servicios activos
+ *   (nombres, precios y duraciones) y los horarios reales del negocio desde Firestore.
  */
 import { GoogleGenAI } from '@google/genai';
 import env from '@/lib/server/env';
@@ -16,54 +15,60 @@ import type { ChatTurn } from '@/lib/types';
 
 const logger = createLogger('ai');
 
-let genaiClient: GoogleGenAI | null = null;
+let cachedClient: { key: string; client: GoogleGenAI } | null = null;
 
-/** Instancia perezosa del cliente de Gemini. */
+/** Instancia del cliente de Gemini autenticada con process.env.GEMINI_API_KEY. */
 const getClient = (): GoogleGenAI => {
-  if (!env.GEMINI_API_KEY) {
+  const apiKey = (process.env.GEMINI_API_KEY || env.GEMINI_API_KEY || '').trim();
+  if (!apiKey) {
     throw new AppError(
-      'El asistente virtual no esta disponible en este momento (falta configurar la IA).',
+      'El asistente virtual requiere configurar la variable GEMINI_API_KEY en el servidor (.env.local).',
       503,
     );
   }
-  if (!genaiClient) {
-    genaiClient = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
+  if (!cachedClient || cachedClient.key !== apiKey) {
+    cachedClient = {
+      key: apiKey,
+      client: new GoogleGenAI({ apiKey }),
+    };
   }
-  return genaiClient;
+  return cachedClient.client;
 };
 
 /**
- * Reglas del sistema: identidad, reglas anti-alucinacion, estilo y
- * politica de "no lo se" con datos de contacto.
+ * Instrucción base del sistema: configura al bot como la recepcionista amable
+ * de Beauty Virtual en Barbosa, Antioquia.
  */
-export const SYSTEM_INSTRUCTION_BASE = `Eres el asistente virtual de "Beauty Salón", un salón de estética y cuidado personal ubicado en Barbosa, Antioquia (Colombia).
+export const SYSTEM_INSTRUCTION_BASE = `Eres la recepcionista virtual amable y profesional de "Beauty Virtual" (Beauty Salón), un salón de estética y cuidado personal ubicado en Barbosa, Antioquia (Colombia).
 
-TU PERSONALIDAD:
-- Hablas en español colombiano, con tono cálido, cercano y profesional. Tratas al usuario de "tú".
-- Eres breve y concreto: responde con máximo 5 frases, salvo que el usuario pida más detalle o un listado.
-- Usas emojis con moderación (máximo 1 por respuesta) para dar calidez.
+TU PERSONALIDAD Y ROL:
+- Hablas en español colombiano con un tono cálido, amable, servicial y cercano (tratas al cliente de "tú").
+- Eres concisa y clara: responde en máximo 4 o 5 frases, salvo que el cliente pida ver varios servicios o precios detallados.
+- Usas emojis sutiles (💅, ✨, 📅, 💬) con moderación para transmitir calidez.
+- Tu objetivo principal es resolver dudas sobre servicios, precios, duraciones y horarios de atención, y guiar amablemente al usuario para que agende su cita en la plataforma.
 
-REGLAS INVIOLABLES (anti-alucinaciones):
-1. Tu fuente de verdad es EXCLUSIVAMENTE el bloque "DATOS VERIFICADOS DEL NEGOCIO" que aparece al final de estas instrucciones. Solo puedes afirmar servicios, precios, duraciones, horarios, politicas y datos de contacto que esten literalmente ahi.
-2. PROHIBIDO inventar o estimar precios, promociones, productos, horarios, tecnicas, garantias o politicas que no aparezcan en los datos verificados.
-3. Si la información no esta en los datos verificados, NO la adivines. Responde con frases como: "Esa información no la tengo disponible en este momento" y ofrece un asesor humano con los datos de contacto del negocio (teléfono, WhatsApp y correo) que SI estan en los datos verificados.
-4. No prometas descuentos, resultados clinicos ni tiempos de entrega que no figuren en los datos.
-5. No puedes agendar citas, cobrar, cancelar ni modificar datos desde el chat. Si el usuario quiere reservar, indicale que puede hacerlo desde el sitio web en la sección "Agendar cita" (o que llame al teléfono del negocio).
-6. No entregues datos personales de otros usuarios ni inventes informacion de los clientes. Solo puedes mencionar al usuario sus propias citas.
-7. Si el usuario pide datos que no son del salón (clima, noticias, temas no relacionados), indica con amabilidad que solo puedes ayudar con temas del salón y su agenda.
+REGLAS ESTRICTAS (BASADAS EN DATOS REALES):
+1. Tu única fuente de verdad es el bloque "DATOS VERIFICADOS DE BEAUTY VIRTUAL" incluido al final de este prompt, donde están inyectados dinámicamente los servicios activos (con nombre, precio y duración) y los horarios reales del salón.
+2. NUNCA inventes servicios, precios, descuentos ni horarios que no aparezcan en los datos verificados.
+3. Cuando te pregunten por precios o servicios, menciona el nombre exacto del servicio, su precio en pesos colombianos (COP) y su duración en minutos.
+4. Cuando el usuario quiera agendar, reservar o pedir una cita:
+   - Explícale con amabilidad que puede agendar en segundos desde la sección "Agendar mi cita" (o entrando a "Mi agenda" / "/dashboard" tras iniciar sesión con su número de teléfono), eligiendo el servicio, profesional, fecha y hora disponible.
+   - También puedes ofrecerle el WhatsApp o teléfono oficial del salón si prefiere atención personalizada.
+5. Si el usuario pregunta algo que no está en los datos del salón, indícale amablemente que no tienes ese dato específico y facilítale el WhatsApp y teléfono del salón.
 
-FORMATO:
-- Responde en texto plano, sin Markdown pesado ni encabezados.
-- Si das una lista de servicios, usa lineas cortas con "- " al inicio.
-- Cierra invitando a agendar o a contactarnos si tiene dudas.`;
+FORMATO DE RESPUESTA:
+- Usa texto claro y fácil de leer en un chat móvil.
+- Si listas servicios o horarios, usa viñetas cortas con "- ".
+- Cierra siempre con una invitación cálida a agendar su cita o resolver cualquier otra duda.`;
 
 export const UNKNOWN_ANSWER_FALLBACK =
-  'Por ahora no tengo esa informacion disponible. Puedes hablar con un asesor del salon escribiendo por WhatsApp o llamando al numero del negocio.';
+  'Por ahora no tengo esa información disponible. Puedes escribirnos por WhatsApp o llamarnos directamente al salón para asesorarte.';
 
 /**
- * Construye el System Instruction final (reglas + datos verificados).
+ * Construye el System Instruction final inyectando dinámicamente los servicios activos
+ * y horarios del negocio.
  */
-export const buildSystemInstruction = (context: ChatContext, user: AuthUser): string =>
+export const buildSystemInstruction = (context: ChatContext, user?: AuthUser | null): string =>
   [
     SYSTEM_INSTRUCTION_BASE,
     '',
@@ -87,7 +92,7 @@ export const buildContents = (
   return contents;
 };
 
-/** Convierte errores de la API de Gemini en mensajes claros en espanol. */
+/** Convierte errores de la API de Gemini en mensajes claros en español. */
 const mapGeminiError = (error: unknown): AppError => {
   const err = error as {
     status?: number;
@@ -97,7 +102,8 @@ const mapGeminiError = (error: unknown): AppError => {
     response?: { status?: number };
   };
 
-  const status = err?.status ?? (typeof err?.code === 'number' ? err.code : undefined) ?? err?.response?.status;
+  const status =
+    err?.status ?? (typeof err?.code === 'number' ? err.code : undefined) ?? err?.response?.status;
   const message = String(err?.message || '').toLowerCase();
 
   if (
@@ -107,30 +113,27 @@ const mapGeminiError = (error: unknown): AppError => {
     message.includes('resource_exhausted')
   ) {
     return new AppError(
-      'Alcanzamos el limite de consultas de la IA en este momento. Intenta de nuevo en unos minutos.',
+      'Alcanzamos el límite de consultas de la IA en este momento. Intenta de nuevo en unos segundos.',
       429,
     );
   }
   if (status === 404 || (message.includes('not found') && message.includes('model'))) {
-    return new AppError('El modelo de IA configurado no esta disponible. Contacta al administrador.', 503);
+    return new AppError('El modelo de IA configurado no está disponible.', 503);
   }
-  if (status === 401 || status === 403) {
-    return new AppError('Credenciales de la IA invalidas. Contacta al administrador.', 503);
-  }
-  if (message.includes('api key not valid') || message.includes('api_key_invalid')) {
+  if (status === 401 || status === 403 || message.includes('api key not valid') || message.includes('api_key_invalid')) {
     return new AppError(
-      'La API key configurada para la IA no es valida. Contacta al administrador del salon.',
+      'La clave GEMINI_API_KEY configurada no es válida. Verifica tu archivo .env.local.',
       503,
     );
   }
   if (err?.name === 'AbortError' || message.includes('aborted') || message.includes('timeout')) {
-    return new AppError('La IA tardo demasiado en responder. Intenta de nuevo en un momento.', 504);
+    return new AppError('La IA tardó demasiado en responder. Intenta de nuevo en un momento.', 504);
   }
   if (status === 503 || message.includes('overloaded') || message.includes('unavailable')) {
-    return new AppError('El servicio de IA esta temporalmente saturado. Intenta de nuevo en un momento.', 503);
+    return new AppError('El servicio de IA está temporalmente saturado. Intenta de nuevo en un momento.', 503);
   }
 
-  return new AppError('No pudimos procesar tu mensaje en este momento. Intenta de nuevo en un momento.', 502);
+  return new AppError('No pudimos procesar tu mensaje en este momento. Intenta de nuevo.', 502);
 };
 
 export interface GenerateReplyResult {
@@ -140,20 +143,21 @@ export interface GenerateReplyResult {
 }
 
 /**
- * Genera la respuesta del asistente.
+ * Genera la respuesta del asistente usando el modelo `gemini-2.5-flash` de `@google/genai`.
  */
 export const generateReply = async ({
   message,
   history = [],
   context,
-  user,
+  user = null,
 }: {
   message: string;
   history?: ChatTurn[];
   context: ChatContext;
-  user: AuthUser;
+  user?: AuthUser | null;
 }): Promise<GenerateReplyResult> => {
   const ai = getClient();
+  const modelName = process.env.GEMINI_MODEL || env.GEMINI_MODEL || 'gemini-2.5-flash';
   const contents = buildContents(history, message);
   const systemInstruction = buildSystemInstruction(context, user);
 
@@ -162,11 +166,11 @@ export const generateReply = async ({
 
   try {
     const response = await ai.models.generateContent({
-      model: env.GEMINI_MODEL,
+      model: modelName,
       contents,
       config: {
         systemInstruction,
-        temperature: 0.3,
+        temperature: 0.35,
         topP: 0.9,
         maxOutputTokens: env.AI_MAX_OUTPUT_TOKENS,
         abortSignal: controller.signal,
@@ -179,7 +183,7 @@ export const generateReply = async ({
     const usage = response?.usageMetadata || null;
 
     if (!text) {
-      throw new AppError('La IA devolvio una respuesta vacia. Intenta de nuevo en un momento.', 502);
+      throw new AppError('La IA devolvió una respuesta vacía. Intenta de nuevo en un momento.', 502);
     }
 
     return {
@@ -199,13 +203,19 @@ export const generateReply = async ({
 /**
  * Verifica que el modelo configurado responda (usado en /api/health).
  */
-export const checkGemini = async (): Promise<{ ok: boolean; reason?: string; model?: string; available?: number }> => {
-  if (!env.GEMINI_API_KEY) return { ok: false, reason: 'GEMINI_API_KEY no configurada' };
+export const checkGemini = async (): Promise<{
+  ok: boolean;
+  reason?: string;
+  model?: string;
+  available?: number;
+}> => {
+  const apiKey = (process.env.GEMINI_API_KEY || env.GEMINI_API_KEY || '').trim();
+  if (!apiKey) return { ok: false, reason: 'GEMINI_API_KEY no configurada' };
 
   try {
     const ai = getClient();
     await ai.models.list();
-    return { ok: true, model: env.GEMINI_MODEL, available: 1 };
+    return { ok: true, model: process.env.GEMINI_MODEL || env.GEMINI_MODEL || 'gemini-2.5-flash', available: 1 };
   } catch (error) {
     return { ok: false, reason: (error as Error)?.message || 'Error consultando Gemini' };
   }

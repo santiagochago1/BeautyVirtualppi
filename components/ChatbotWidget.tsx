@@ -3,18 +3,16 @@
 /**
  * ChatbotWidget
  * ------------------------------------------------------------------
- * Widget flotante con el asistente virtual de Beauty Salon.
+ * Widget flotante con el asistente virtual de Beauty Virtual (Barbosa, Antioquia).
  *
  * Funcionalidades:
  *  - Boton flotante con animacion de pulso y contador de mensajes sin leer.
  *  - Panel responsivo (movil / escritorio) con cabecera degradada.
- *  - Animacion de "escribiendo" (puntos rebotando) mientras espera a la IA.
+ *  - Indicador de tres puntos parpadeantes + "Escribiendo..." mientras espera a la IA.
  *  - Scroll automatico al ultimo mensaje.
- *  - Manejo de errores: sin conexion, sesion expirada y limite de peticiones.
- *  - Historial limitado (ultimos 10 mensajes) para optimizar consumo.
+ *  - Disponible tanto para visitantes como para clientes autenticados.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useAuth } from '@/components/AuthProvider';
 import { apiRequest, ApiError } from '@/lib/api';
 import { formatMessageTime } from '@/lib/format';
@@ -31,18 +29,21 @@ const WELCOME_MESSAGE: ChatMessage = {
   id: 'welcome',
   role: 'assistant',
   text:
-    '¡Hola! ✨ Soy el asistente virtual de Beauty Salón. Te puedo informar sobre nuestros servicios, precios, horarios y tu agenda. ¿En qué te ayudo?',
-  // Sin timestamp: `new Date()` a nivel de modulo se evaluaria durante el
-  // prerender de este Client Component (Next.js aborta los valores
-  // inestables) y ademas generaria un desajuste de hidratacion.
+    '¡Hola! ✨ Soy la recepcionista virtual de Beauty Virtual en Barbosa, Antioquia. Te puedo informar sobre nuestros servicios, precios, horarios y guiarte para agendar tu cita. ¿En qué te puedo colaborar hoy?',
   timestamp: '',
 };
+
+const QUICK_SUGGESTIONS = [
+  'Ver servicios y precios',
+  '¿Cuál es el horario?',
+  'Quiero agendar una cita',
+];
 
 const MAX_HISTORY = 10;
 const MAX_INPUT_LENGTH = 1000;
 
 export default function ChatbotWidget() {
-  const { isAuthenticated, isConfigured, role, getIdToken } = useAuth();
+  const { role, getIdToken } = useAuth();
 
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
@@ -86,19 +87,14 @@ export default function ChatbotWidget() {
     setIsOpen((open) => !open);
   }, []);
 
-  /* Envio de mensajes */
+  /* Envio de mensajes a POST /api/chat */
   const sendMessage = useCallback(
     async (text?: string) => {
       const message = (text ?? input).trim();
       if (!message || isLoading) return;
 
       if (!isOnline) {
-        setError('No tienes conexion a internet. Recuperala para seguir chateando.');
-        return;
-      }
-
-      if (!isAuthenticated) {
-        setError('Inicia sesion para usar el asistente virtual.');
+        setError('No tienes conexión a internet. Recupérala para seguir chateando.');
         return;
       }
 
@@ -113,7 +109,7 @@ export default function ChatbotWidget() {
       };
 
       const history: ChatTurn[] = messages
-        .filter((item) => item.id !== 'welcome')
+        .filter((item) => item.id !== 'welcome' && item.role !== 'system')
         .slice(-MAX_HISTORY)
         .map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', text: item.text }));
 
@@ -121,7 +117,7 @@ export default function ChatbotWidget() {
       setIsLoading(true);
 
       try {
-        const token = await getIdToken();
+        const token = await getIdToken().catch(() => null);
         const data = await apiRequest<{ reply: string; timestamp?: string }>('/chat', {
           method: 'POST',
           token,
@@ -142,13 +138,9 @@ export default function ChatbotWidget() {
 
         if (requestError instanceof ApiError) {
           if (requestError.status === 0) {
-            errorMessage = 'No pudimos conectar con el servidor. Revisa tu conexion e intenta de nuevo.';
+            errorMessage = 'No pudimos conectar con el servidor. Revisa tu conexión e intenta de nuevo.';
           } else if (requestError.status === 429) {
             errorMessage = 'Has enviado demasiados mensajes. Espera un minuto y vuelve a intentarlo.';
-          } else if (requestError.status === 401) {
-            errorMessage = 'Tu sesion expiro. Cierra sesion e inicia sesion nuevamente.';
-          } else if (requestError.status === 403) {
-            errorMessage = 'No tienes permisos para usar el chat en este momento.';
           } else {
             errorMessage = requestError.message || errorMessage;
           }
@@ -168,18 +160,18 @@ export default function ChatbotWidget() {
         setIsLoading(false);
       }
     },
-    [getIdToken, input, isAuthenticated, isLoading, isOnline, isOpen, messages],
+    [getIdToken, input, isLoading, isOnline, isOpen, messages],
   );
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    sendMessage();
+    void sendMessage();
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
-      sendMessage();
+      void sendMessage();
     }
   };
 
@@ -209,9 +201,9 @@ export default function ChatbotWidget() {
             </div>
 
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">Asistente Beauty Salón</p>
+              <p className="truncate text-sm font-semibold">Asistente Beauty Virtual</p>
               <p className="truncate text-xs text-white/80">
-                {isOnline ? 'En linea · responde en segundos' : 'Sin conexion'}
+                {isOnline ? 'En línea · Barbosa, Antioquia' : 'Sin conexión'}
               </p>
             </div>
 
@@ -229,7 +221,7 @@ export default function ChatbotWidget() {
 
           {!isOnline && (
             <div className="bg-amber-50 px-4 py-2 text-center text-xs font-medium text-amber-700">
-              ⚠ Sin conexion a internet. El chat se activara al recuperarla.
+              ⚠ Sin conexión a internet. El chat se activará al recuperarla.
             </div>
           )}
 
@@ -248,10 +240,13 @@ export default function ChatbotWidget() {
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-plum-600 text-sm text-white">
                   💅
                 </span>
-                <div className="flex items-center gap-1 rounded-2xl rounded-bl-md bg-white px-4 py-3 shadow-sm">
-                  <Dot delay="0ms" />
-                  <Dot delay="150ms" />
-                  <Dot delay="300ms" />
+                <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-md border border-brand-100 bg-white px-4 py-2.5 shadow-sm">
+                  <div className="flex items-center gap-1">
+                    <Dot delay="0ms" />
+                    <Dot delay="150ms" />
+                    <Dot delay="300ms" />
+                  </div>
+                  <span className="ml-1 text-xs font-medium text-slate-400">Escribiendo...</span>
                 </div>
               </div>
             )}
@@ -269,14 +264,15 @@ export default function ChatbotWidget() {
             </div>
           )}
 
-          {isAuthenticated && messages.length <= 1 && (
-            <div className="flex flex-wrap gap-2 border-t border-brand-100 px-4 py-2">
-              {['Ver servicios y precios', '¿Cual es el horario?', 'Quiero agendar una cita'].map((suggestion) => (
+          {messages.length <= 1 && (
+            <div className="flex flex-wrap gap-1.5 border-t border-brand-100 px-4 py-2">
+              {QUICK_SUGGESTIONS.map((suggestion) => (
                 <button
                   key={suggestion}
                   type="button"
-                  onClick={() => sendMessage(suggestion)}
-                  className="rounded-full border border-brand-200 bg-white px-3 py-1.5 text-xs font-medium text-brand-700 transition hover:bg-brand-50"
+                  disabled={isLoading}
+                  onClick={() => void sendMessage(suggestion)}
+                  className="rounded-full border border-brand-200 bg-white px-3 py-1 text-xs font-medium text-brand-700 transition hover:bg-brand-50 disabled:opacity-50"
                 >
                   {suggestion}
                 </button>
@@ -298,18 +294,12 @@ export default function ChatbotWidget() {
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isLoading}
-              placeholder={
-                isConfigured
-                  ? isAuthenticated
-                    ? 'Escribe tu mensaje...'
-                    : 'Inicia sesion para chatear'
-                  : 'Configura Firebase para usar el chat'
-              }
+              placeholder="Pregunta sobre precios, horarios o citas..."
               className="max-h-28 flex-1 resize-none rounded-2xl border border-brand-200 bg-brand-50/40 px-4 py-2.5 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-brand-400 focus:bg-white focus:ring-2 focus:ring-brand-100 disabled:opacity-60"
             />
             <button
               type="submit"
-              disabled={isLoading || !input.trim() || !isAuthenticated}
+              disabled={isLoading || !input.trim()}
               aria-label="Enviar mensaje"
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-plum-600 text-white shadow-soft transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -322,15 +312,6 @@ export default function ChatbotWidget() {
               )}
             </button>
           </form>
-
-          {!isAuthenticated && (
-            <div className="border-t border-brand-100 bg-brand-50/60 px-4 py-3 text-center text-xs text-slate-600">
-              <Link href="/login" className="font-semibold text-brand-700 underline">
-                Inicia sesion
-              </Link>{' '}
-              para hablar con el asistente virtual.
-            </div>
-          )}
         </section>
       )}
 
@@ -372,7 +353,7 @@ function Bubble({ message }: { message: ChatMessage }) {
       )}
 
       <div
-        className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
+        className={`max-w-[82%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
           isUser
             ? 'rounded-br-md bg-gradient-to-br from-brand-500 to-plum-600 text-white'
             : 'rounded-bl-md border border-brand-100 bg-white text-slate-700'
