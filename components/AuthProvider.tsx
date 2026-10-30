@@ -17,6 +17,7 @@ import {
 } from 'firebase/auth';
 import { auth, isFirebaseConfigured } from '@/lib/firebase';
 import { apiRequest, getErrorMessage } from '@/lib/api';
+import { isValidPhone, normalizePhone, phoneToAuthEmail } from '@/lib/format';
 import type { AuthMeUser, Role } from '@/lib/types';
 
 export interface AuthContextValue {
@@ -31,8 +32,9 @@ export interface AuthContextValue {
   loading: boolean;
   error: string | null;
   signIn: (email: string, password: string) => Promise<FirebaseUser>;
-  signUp: (name: string, email: string, password: string) => Promise<FirebaseUser>;
+  signUp: (name: string, email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
+  logout: () => Promise<void>;
   refreshProfile: () => Promise<AuthMeUser | null>;
   getIdToken: () => Promise<string | null>;
 }
@@ -60,10 +62,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const token = await user.getIdToken();
       const data = await apiRequest<{ user: AuthMeUser }>('/auth/me', { token });
+      if (auth?.currentUser?.uid !== user.uid) {
+        setProfile(null);
+        return null;
+      }
       setProfile(data.user);
       return data.user;
     } catch (requestError: unknown) {
-      setError(getErrorMessage(requestError, 'No fue posible cargar tu perfil.'));
+      if (auth?.currentUser?.uid === user.uid) {
+        setError(getErrorMessage(requestError, 'No fue posible cargar tu perfil.'));
+      }
       setProfile(null);
       return null;
     }
@@ -84,35 +92,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [loadProfile]);
 
   const signIn = useCallback(
-    async (email: string, password: string) => {
+    async (phoneOrIdentifier: string, password: string) => {
       setError(null);
       if (!isFirebaseConfigured) {
         throw new Error('Firebase no esta configurado. Revisa las variables NEXT_PUBLIC_FIREBASE_*');
       }
-      const credential = await signInWithEmailAndPassword(auth, email, password);
-      await credential.user.getIdToken(true); 
+      const authEmail = phoneToAuthEmail(phoneOrIdentifier);
+      const credential = await signInWithEmailAndPassword(auth, authEmail, password);
+      await credential.user.getIdToken(true);
       await loadProfile(credential.user);
       return credential.user;
     },
-
-    
     [loadProfile],
   );
 
   const signUp = useCallback(
-    async (name: string, email: string, password: string) => {
+    async (name: string, phone: string, password: string) => {
       setError(null);
       if (!isFirebaseConfigured) {
         throw new Error('Firebase no esta configurado. Revisa las variables NEXT_PUBLIC_FIREBASE_*');
       }
-      const credential = await createUserWithEmailAndPassword(auth, email, password);
+      const cleanPhone = normalizePhone(phone);
+      if (!isValidPhone(cleanPhone)) {
+        throw new Error('Ingresa un número de teléfono / WhatsApp válido (ej: 3001234567).');
+      }
+      const authEmail = phoneToAuthEmail(cleanPhone);
+      const credential = await createUserWithEmailAndPassword(auth, authEmail, password);
       if (name) {
         await updateProfile(credential.user, { displayName: name });
       }
-      await loadProfile(credential.user);
-      return credential.user;
+      try {
+        const token = await credential.user.getIdToken();
+        await apiRequest('/auth/me', {
+          method: 'PATCH',
+          token,
+          body: { displayName: name, phone: cleanPhone },
+        });
+      } catch {
+        // El perfil base ya guarda el telefono extraido por getOrCreateUser
+      }
+      // Cierra la sesion temporal creada por Firebase al registrarse para exigir login explicito
+      await firebaseSignOut(auth);
+      setProfile(null);
+      setFirebaseUser(null);
     },
-    [loadProfile],
+    [],
   );
 
   const signOut = useCallback(async () => {
@@ -145,6 +169,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signIn,
       signUp,
       signOut,
+      logout: signOut,
       refreshProfile,
       getIdToken,
     }),

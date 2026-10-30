@@ -46,15 +46,19 @@ export async function POST(request: NextRequest) {
 
     const { firebaseAuth, isFirebaseReady } = await import('@/lib/server/firebase-admin');
     const { AppError } = await import('@/lib/server/errors');
-    const { isValidEmail, cleanString } = await import('@/lib/server/validators');
+    const { isValidPhone, normalizePhone, phoneToAuthEmail, cleanString } = await import('@/lib/server/validators');
     const { provisionUser } = await import('@/lib/server/models/user');
 
     if (!isFirebaseReady()) throw new AppError('La autenticacion no esta disponible en este momento.', 503);
 
     const body = await request.json().catch(() => ({}));
-    const { email, password, displayName, role = 'client', phone = null } = body;
+    const { phone, email, password, displayName, role = 'client' } = body;
 
-    if (!isValidEmail(email)) throw new AppError('El correo electronico no es valido.', 400);
+    const rawPhone = phone || email || '';
+    const cleanPhone = normalizePhone(rawPhone);
+    if (!isValidPhone(cleanPhone)) {
+      throw new AppError('Ingresa un numero de telefono / WhatsApp valido (ej: 3001234567).', 400);
+    }
     if (typeof password !== 'string' || password.length < 6) {
       throw new AppError('La contrase\u00f1a debe tener al menos 6 caracteres.', 400);
     }
@@ -62,13 +66,14 @@ export async function POST(request: NextRequest) {
       throw new AppError('Rol invalido. Usa client, employee o admin.', 400);
     }
 
+    const syntheticEmail = phoneToAuthEmail(cleanPhone);
+
     let userRecord: Awaited<ReturnType<NonNullable<typeof firebaseAuth>['createUser']>>;
     try {
       userRecord = await firebaseAuth!.createUser({
-        email: String(email).trim(),
+        email: syntheticEmail,
         password,
-        displayName: cleanString(displayName, 120) || String(email).split('@')[0],
-        phoneNumber: phone || undefined,
+        displayName: cleanString(displayName, 120) || cleanPhone,
       });
     } catch (error: unknown) {
       const code =
@@ -76,20 +81,19 @@ export async function POST(request: NextRequest) {
           ? (error as { code?: unknown }).code
           : undefined;
       if (code === 'auth/email-already-exists') {
-        throw new AppError('Ya existe un usuario registrado con ese correo.', 409);
+        throw new AppError('Ya existe un usuario registrado con ese numero de telefono.', 409);
       }
       throw new AppError('No fue posible crear el usuario. Intenta nuevamente.', 500);
     }
 
-    const normalizedEmail = String(email).trim();
     const normalizedRole: Role = role as Role;
 
     const profile = await provisionUser({
       uid: userRecord.uid,
-      email: userRecord.email || normalizedEmail,
+      email: userRecord.email || syntheticEmail,
       displayName: userRecord.displayName,
       role: normalizedRole,
-      phone,
+      phone: cleanPhone,
     });
 
     return NextResponse.json({ ok: true, user: profile }, { status: 201 });

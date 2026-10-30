@@ -11,9 +11,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiRequest, getErrorMessage } from '@/lib/api';
 import { useAuth } from '@/components/AuthProvider';
+import { useToast } from '@/components/ToastProvider';
 import StatusBadge from '@/components/StatusBadge';
+import CancelAppointmentModal from '@/components/CancelAppointmentModal';
 import LoadingSpinner from '@/components/LoadingSpinner';
-import { formatCurrency, formatLongDate, formatShortDate, formatTime, todayISO } from '@/lib/format';
+import {
+  buildWhatsAppConfirmUrl,
+  extractPhoneFromAuthEmail,
+  formatCurrency,
+  formatLongDate,
+  formatShortDate,
+  formatTime,
+  todayISO,
+} from '@/lib/format';
+import { isBreakAppointment } from '@/lib/schedule-utils';
 import type { Appointment, AppointmentStatus, UserProfile } from '@/lib/types';
 
 /** Constantes del eje horario (08:00 a 20:00, 60 min = 80px). */
@@ -159,7 +170,19 @@ const STATUS_PALETTES: Record<AppointmentStatus, ColumnPalette> = {
     badgeBg: 'bg-rose-100 text-rose-700 border-rose-200',
     hoverBg: 'hover:bg-rose-100',
   },
+  blocked: {
+    id: 'blocked',
+    bg: 'bg-slate-200/95',
+    border: 'border-slate-400',
+    text: 'text-slate-800',
+    dot: 'bg-slate-500',
+    headerBg: 'bg-slate-100',
+    badgeBg: 'bg-slate-200 text-slate-700 border-slate-300',
+    hoverBg: 'hover:bg-slate-300/90',
+  },
 };
+
+const BREAK_DURATIONS = [30, 45, 60, 90];
 
 const EMPLOYEE_ACTIONS: Array<{ status: AppointmentStatus; label: string; className: string }> = [
   { status: 'confirmed', label: 'Confirmar cita', className: 'bg-emerald-600 text-white hover:bg-emerald-700' },
@@ -319,6 +342,7 @@ export default function AppointmentCalendar({
   onUpdated,
 }: AppointmentCalendarProps) {
   const { role, profile, getIdToken } = useAuth();
+  const toast = useToast();
   const isAdmin = role === 'admin';
   const isClientRole = role === 'client' || readOnly;
 
@@ -332,8 +356,19 @@ export default function AppointmentCalendar({
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   const [activeAppointment, setActiveAppointment] = useState<Appointment | null>(null);
+  const [appointmentToCancel, setAppointmentToCancel] = useState<Appointment | null>(null);
+  const [localOverrides, setLocalOverrides] = useState<Record<string, Appointment>>({});
+  const [createdLocally, setCreatedLocally] = useState<Appointment[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Estado del modal de "+ Bloquear Descanso / Pausa"
+  const [isBreakModalOpen, setIsBreakModalOpen] = useState(false);
+  const [breakTime, setBreakTime] = useState('12:30');
+  const [breakDuration, setBreakDuration] = useState<number>(60);
+  const [breakNotes, setBreakNotes] = useState('Descanso / Almuerzo');
+  const [breakEmployeeId, setBreakEmployeeId] = useState('');
+  const [isSavingBreak, setIsSavingBreak] = useState(false);
 
   /* Carga de citas cuando el componente se usa de forma autonoma */
   const loadAppointments = useCallback(async () => {
@@ -378,7 +413,12 @@ export default function AppointmentCalendar({
     };
   }, [isAdmin, getIdToken]);
 
-  const allAppointments = externalAppointments ?? internalAppointments;
+  const allAppointments = useMemo(() => {
+    const base = externalAppointments ?? internalAppointments;
+    const baseIds = new Set(base.map((item) => item.id));
+    const extras = createdLocally.filter((item) => !baseIds.has(item.id));
+    return [...base, ...extras].map((item) => localOverrides[item.id] || item);
+  }, [externalAppointments, internalAppointments, createdLocally, localOverrides]);
 
   /** Citas correspondientes al dia seleccionado. */
   const dayAppointments = useMemo(() => {
@@ -501,16 +541,102 @@ export default function AppointmentCalendar({
         body: { status },
       });
       setActiveAppointment(data.appointment);
+      setLocalOverrides((prev) => ({
+        ...prev,
+        [appointmentId]: data.appointment,
+      }));
       if (externalAppointments === undefined) {
         setInternalAppointments((prev) =>
           prev.map((item) => (item.id === appointmentId ? data.appointment : item)),
         );
       }
+
+      if (status === 'cancelled') {
+        setAppointmentToCancel(null);
+      }
+
+      const statusMessages: Record<AppointmentStatus, { title: string; description: string; variant: 'success' | 'info' | 'warning' }> = {
+        confirmed: {
+          title: 'Cita confirmada',
+          description: `La cita de ${data.appointment.serviceName} para ${data.appointment.userName || 'el cliente'} ha sido confirmada.`,
+          variant: 'success',
+        },
+        completed: {
+          title: 'Cita completada',
+          description: `La cita de ${data.appointment.serviceName} se marcó como completada.`,
+          variant: 'success',
+        },
+        cancelled: {
+          title: 'Cita cancelada correctamente',
+          description: `El turno de ${data.appointment.serviceName} quedó liberado.`,
+          variant: 'success',
+        },
+        blocked: {
+          title: 'Descanso bloqueado',
+          description: 'El bloqueo de descanso fue actualizado.',
+          variant: 'info',
+        },
+        pending: {
+          title: 'Estado actualizado',
+          description: `La cita de ${data.appointment.serviceName} está pendiente.`,
+          variant: 'info',
+        },
+      };
+
+      const feedback = statusMessages[status];
+      if (feedback) {
+        toast.showToast(feedback);
+      }
+
       onUpdated?.(data.appointment);
     } catch (err: unknown) {
-      setActionError(getErrorMessage(err, 'No fue posible actualizar el estado de la cita.'));
+      const errMsg = getErrorMessage(err, 'No fue posible actualizar el estado de la cita.');
+      setActionError(errMsg);
+      toast.error('Error al actualizar cita', errMsg);
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleCreateBreak = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsSavingBreak(true);
+    try {
+      const token = await getIdToken();
+      const targetEmployeeId = isAdmin
+        ? breakEmployeeId || employees[0]?.id || employees[0]?.uid || undefined
+        : undefined;
+
+      const data = await apiRequest<{ appointment: Appointment }>('/appointments', {
+        method: 'POST',
+        token,
+        body: {
+          type: 'break',
+          date: selectedDate,
+          time: breakTime,
+          durationMinutes: breakDuration,
+          notes: breakNotes.trim() || 'Descanso / Almuerzo',
+          employeeId: targetEmployeeId,
+        },
+      });
+
+      setCreatedLocally((prev) => [...prev, data.appointment]);
+      if (externalAppointments === undefined) {
+        setInternalAppointments((prev) => [...prev, data.appointment]);
+      }
+      setIsBreakModalOpen(false);
+      toast.success(
+        'Descanso registrado',
+        `Se bloqueó la franja de ${breakTime} (${breakDuration} min) como Descanso / Almuerzo.`,
+      );
+      onUpdated?.(data.appointment);
+    } catch (err: unknown) {
+      toast.error(
+        'No se pudo bloquear el descanso',
+        getErrorMessage(err, 'Verifica que el horario esté libre y dentro de la jornada laboral.'),
+      );
+    } finally {
+      setIsSavingBreak(false);
     }
   };
 
@@ -577,6 +703,21 @@ export default function AppointmentCalendar({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            {!isClientRole && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (isAdmin && !breakEmployeeId && employees.length > 0) {
+                    setBreakEmployeeId(employees[0].id || employees[0].uid);
+                  }
+                  setIsBreakModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-full border border-slate-300 bg-slate-100 px-3.5 py-1.5 text-xs font-semibold text-slate-700 shadow-xs transition hover:bg-slate-200"
+              >
+                + Bloquear Descanso / Pausa
+              </button>
+            )}
+
             <label htmlFor="agenda-date-picker" className="sr-only">
               Seleccionar fecha
             </label>
@@ -659,6 +800,9 @@ export default function AppointmentCalendar({
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Completada
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-slate-500" /> Descanso / Almuerzo
             </span>
           </div>
         )}
@@ -751,13 +895,19 @@ export default function AppointmentCalendar({
 
                     {/* Bloques de citas posicionados con `top` y `height` proporcionales */}
                     {positioned.map(({ appointment, topPx, heightPx, duration, laneIndex, totalLanes }) => {
-                      const blockPalette = isAdmin
-                        ? column.palette
-                        : STATUS_PALETTES[appointment.status] || STATUS_PALETTES.pending;
+                      const isBreak = isBreakAppointment(appointment);
+                      const blockPalette = isBreak
+                        ? STATUS_PALETTES.blocked
+                        : isAdmin
+                          ? column.palette
+                          : STATUS_PALETTES[appointment.status] || STATUS_PALETTES.pending;
 
                       const endTime = computeEndTime(appointment.time, duration);
                       const isCompact = duration <= 25;
                       const isMedium = duration > 25 && duration <= 45;
+                      const blockTitle = isBreak
+                        ? '☕ Descanso / Almuerzo'
+                        : appointment.serviceName;
 
                       const widthPercent = 100 / totalLanes;
                       const leftPercent = laneIndex * widthPercent;
@@ -770,7 +920,9 @@ export default function AppointmentCalendar({
                             setActionError(null);
                             setActiveAppointment(appointment);
                           }}
-                          title={`${appointment.time} - ${endTime} (${duration} min) · ${appointment.serviceName} · Cliente: ${appointment.userName}`}
+                          title={`${appointment.time} - ${endTime} (${duration} min) · ${blockTitle}${
+                            !isBreak && appointment.userName ? ` · Cliente: ${appointment.userName}` : ''
+                          }`}
                           style={{
                             top: `${topPx}px`,
                             height: `${Math.max(heightPx - 2, 18)}px`,
@@ -785,10 +937,10 @@ export default function AppointmentCalendar({
                             /* Diseño ultra-compacto para citas de 15 o 20 minutos */
                             <div className="flex items-center justify-between gap-1.5 truncate text-[11px] leading-none">
                               <span className="font-bold">
-                                {appointment.time} · {appointment.serviceName}
+                                {appointment.time} · {blockTitle}
                               </span>
                               <span className="shrink-0 opacity-80">
-                                {!isClientRole && appointment.userName ? `${appointment.userName} · ` : ''}
+                                {!isBreak && !isClientRole && appointment.userName ? `${appointment.userName} · ` : ''}
                                 {duration}m
                               </span>
                             </div>
@@ -804,8 +956,8 @@ export default function AppointmentCalendar({
                                 </span>
                               </div>
                               <p className="mt-0.5 truncate text-xs font-semibold">
-                                {appointment.serviceName}
-                                {!isClientRole && appointment.userName ? ` · ${appointment.userName}` : ''}
+                                {blockTitle}
+                                {!isBreak && !isClientRole && appointment.userName ? ` · ${appointment.userName}` : ''}
                               </p>
                             </div>
                           ) : (
@@ -821,20 +973,29 @@ export default function AppointmentCalendar({
                                   </span>
                                 </div>
                                 <p className="mt-1 truncate font-display text-xs font-bold sm:text-sm">
-                                  {appointment.serviceName}
+                                  {blockTitle}
                                 </p>
-                                {!isClientRole && appointment.userName && (
-                                  <p className="mt-0.5 truncate text-[11px] opacity-90">
-                                    👤 Cliente: <strong>{appointment.userName}</strong>
+                                {isBreak ? (
+                                  <p className="mt-0.5 truncate text-[11px] opacity-80">
+                                    {appointment.notes || 'Pausa personal / Almuerzo'}
                                   </p>
+                                ) : (
+                                  !isClientRole &&
+                                  appointment.userName && (
+                                    <p className="mt-0.5 truncate text-[11px] opacity-90">
+                                      👤 Cliente: <strong>{appointment.userName}</strong>
+                                    </p>
+                                  )
                                 )}
                               </div>
 
                               <div className="flex items-center justify-between gap-1 pt-1 text-[10px] opacity-80">
                                 <span className="truncate">
-                                  {isAdmin
-                                    ? `👩‍💼 ${appointment.employeeName || 'Sin asignar'}`
-                                    : formatCurrency(appointment.servicePrice)}
+                                  {isBreak
+                                    ? 'Bloqueo de agenda'
+                                    : isAdmin
+                                      ? `👩‍💼 ${appointment.employeeName || 'Sin asignar'}`
+                                      : formatCurrency(appointment.servicePrice)}
                                 </span>
                                 <span className="font-semibold underline group-hover:opacity-100">Detalles</span>
                               </div>
@@ -910,62 +1071,120 @@ export default function AppointmentCalendar({
                 </dd>
               </div>
 
+            {!isBreakAppointment(activeAppointment) && (
               <div className="flex justify-between gap-4">
                 <dt className="font-medium text-slate-500">👤 Cliente</dt>
                 <dd className="text-right font-semibold text-slate-800">
                   {activeAppointment.userName || 'No especificado'}
-                  {activeAppointment.userEmail && (
-                    <span className="block text-xs font-normal text-slate-500">{activeAppointment.userEmail}</span>
-                  )}
-                  {activeAppointment.userPhone && (
-                    <span className="block text-xs font-normal text-slate-500">Tel: {activeAppointment.userPhone}</span>
+                  {(activeAppointment.userPhone || extractPhoneFromAuthEmail(activeAppointment.userEmail)) && (
+                    <span className="block text-xs font-normal text-slate-500">
+                      📱 Tel / WhatsApp:{' '}
+                      {activeAppointment.userPhone || extractPhoneFromAuthEmail(activeAppointment.userEmail)}
+                    </span>
                   )}
                 </dd>
               </div>
-
-              <div className="flex items-center justify-between gap-4">
-                <dt className="font-medium text-slate-500">👩‍💼 Profesional</dt>
-                <dd className="text-right font-semibold text-brand-700">
-                  {activeAppointment.employeeName || 'Sin asignar'}
-                </dd>
-              </div>
-
-              {activeAppointment.notes && (
-                <div className="rounded-2xl bg-brand-50/60 p-3 text-xs text-slate-600">
-                  <dt className="font-semibold uppercase tracking-wide text-brand-700">Notas</dt>
-                  <dd className="mt-1 italic">“{activeAppointment.notes}”</dd>
-                </div>
-              )}
-            </dl>
-
-            {actionError && (
-              <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                {actionError}
-              </p>
             )}
 
-            {!isClientRole &&
-              activeAppointment.status !== 'cancelled' &&
-              activeAppointment.status !== 'completed' && (
-                <div className="mt-5 border-t border-brand-100 pt-4">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    Cambiar estado
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {EMPLOYEE_ACTIONS.map((action) => (
-                      <button
-                        key={action.status}
-                        type="button"
-                        disabled={busyId === activeAppointment.id || activeAppointment.status === action.status}
-                        onClick={() => handleStatusChange(activeAppointment.id, action.status)}
-                        className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition disabled:opacity-40 ${action.className}`}
-                      >
-                        {action.label}
-                      </button>
-                    ))}
-                  </div>
+            <div className="flex items-center justify-between gap-4">
+              <dt className="font-medium text-slate-500">👩‍💼 Profesional</dt>
+              <dd className="text-right font-semibold text-brand-700">
+                {activeAppointment.employeeName || 'Sin asignar'}
+              </dd>
+            </div>
+
+            {activeAppointment.notes && (
+              <div className="rounded-2xl bg-brand-50/60 p-3 text-xs text-slate-600">
+                <dt className="font-semibold uppercase tracking-wide text-brand-700">Notas</dt>
+                <dd className="mt-1 italic">“{activeAppointment.notes}”</dd>
+              </div>
+            )}
+          </dl>
+
+          {actionError && (
+            <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              {actionError}
+            </p>
+          )}
+
+          {/* Boton de confirmacion por WhatsApp (solo para citas de clientes, no para descansos) */}
+          {!isBreakAppointment(activeAppointment) &&
+            (() => {
+              const clientPhone =
+                activeAppointment.userPhone || extractPhoneFromAuthEmail(activeAppointment.userEmail) || '';
+
+              const whatsappUrl = buildWhatsAppConfirmUrl({
+                phone: clientPhone,
+                clientName: activeAppointment.userName || 'Cliente',
+                serviceName: activeAppointment.serviceName,
+                date: activeAppointment.date,
+                time: activeAppointment.time,
+              });
+
+              return (
+                <div className="mt-5">
+                  <a
+                    href={whatsappUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex w-full items-center justify-center gap-2 rounded-full bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-xs transition hover:bg-emerald-700"
+                  >
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path d="M20.52 3.48A11.86 11.86 0 0 0 12.06 0C5.5 0 .16 5.34.16 11.9c0 2.1.55 4.15 1.6 5.95L0 24l6.33-1.66a11.9 11.9 0 0 0 5.73 1.46h.01c6.55 0 11.89-5.34 11.89-11.9 0-3.18-1.24-6.17-3.44-8.42ZM12.07 21.8h-.01a9.87 9.87 0 0 1-5.03-1.38l-.36-.21-3.76.98 1-3.66-.24-.38a9.85 9.85 0 0 1-1.51-5.25c0-5.45 4.44-9.89 9.9-9.89 2.64 0 5.13 1.03 6.99 2.9a9.83 9.83 0 0 1 2.9 7c0 5.45-4.44 9.89-9.88 9.89Zm5.43-7.41c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.16-.17.2-.35.22-.65.07-.3-.15-1.25-.46-2.38-1.47-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.48 0 1.46 1.07 2.88 1.22 3.07.15.2 2.1 3.2 5.08 4.49.71.31 1.26.49 1.69.63.71.23 1.36.2 1.87.12.57-.09 1.76-.72 2.01-1.41.25-.7.25-1.29.17-1.42-.07-.12-.27-.2-.57-.35Z" />
+                    </svg>
+                    Confirmar por WhatsApp
+                  </a>
                 </div>
-              )}
+              );
+            })()}
+
+          {!isClientRole &&
+            activeAppointment.status !== 'cancelled' &&
+            activeAppointment.status !== 'completed' && (
+              <div className="mt-5 border-t border-brand-100 pt-4">
+                {isBreakAppointment(activeAppointment) ? (
+                  <button
+                    type="button"
+                    disabled={busyId === activeAppointment.id}
+                    onClick={() => void handleStatusChange(activeAppointment.id, 'cancelled')}
+                    className="w-full rounded-full border border-rose-200 bg-white px-4 py-2 text-xs font-semibold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50"
+                  >
+                    Liberar / Eliminar bloqueo de descanso
+                  </button>
+                ) : (
+                  <>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      Cambiar estado
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {EMPLOYEE_ACTIONS.map((action) => (
+                        <button
+                          key={action.status}
+                          type="button"
+                          disabled={busyId === activeAppointment.id || activeAppointment.status === action.status}
+                          onClick={() => {
+                            if (action.status === 'cancelled') {
+                              setAppointmentToCancel(activeAppointment);
+                            } else {
+                              void handleStatusChange(activeAppointment.id, action.status);
+                            }
+                          }}
+                          className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition disabled:opacity-40 ${action.className}`}
+                        >
+                          {action.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
 
             <div className="mt-6 flex justify-end">
               <button
@@ -979,6 +1198,170 @@ export default function AppointmentCalendar({
           </div>
         </div>
       )}
+
+      {/* Modal para "+ Bloquear Descanso / Pausa" */}
+      {isBreakModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-rose-950/40 p-4 backdrop-blur-xs"
+          onClick={() => {
+            if (!isSavingBreak) setIsBreakModalOpen(false);
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="break-modal-title"
+        >
+          <div
+            className="w-full max-w-md animate-pop-in rounded-3xl border border-brand-100 bg-white p-6 shadow-chat"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="inline-block rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                  Autogestión de pausa
+                </span>
+                <h3 id="break-modal-title" className="mt-2 font-display text-xl font-bold text-brand-800">
+                  Bloquear Descanso / Pausa
+                </h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  Reserva tu horario de almuerzo o pausa personal para que no se agenden citas en esa franja.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBreakModalOpen(false)}
+                aria-label="Cerrar modal"
+                className="rounded-full p-1.5 text-slate-400 transition hover:bg-brand-50 hover:text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateBreak} className="mt-5 space-y-4">
+              {isAdmin && employees.length > 0 && (
+                <div>
+                  <label htmlFor="break-employee" className="label-field">
+                    Profesional
+                  </label>
+                  <select
+                    id="break-employee"
+                    value={breakEmployeeId}
+                    onChange={(event) => setBreakEmployeeId(event.target.value)}
+                    className="input-field"
+                    required
+                  >
+                    {employees.map((emp) => (
+                      <option key={emp.id || emp.uid} value={emp.id || emp.uid}>
+                        {emp.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="break-date" className="label-field">
+                    Fecha
+                  </label>
+                  <input
+                    id="break-date"
+                    type="date"
+                    value={selectedDate}
+                    onChange={(event) => {
+                      if (event.target.value) setSelectedDate(event.target.value);
+                    }}
+                    required
+                    className="input-field"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="break-time" className="label-field">
+                    Hora de inicio
+                  </label>
+                  <input
+                    id="break-time"
+                    type="time"
+                    min="08:00"
+                    max="19:30"
+                    value={breakTime}
+                    onChange={(event) => setBreakTime(event.target.value)}
+                    required
+                    className="input-field"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <p className="label-field">Duración del descanso</p>
+                <div className="grid grid-cols-4 gap-2">
+                  {BREAK_DURATIONS.map((mins) => (
+                    <button
+                      key={mins}
+                      type="button"
+                      onClick={() => setBreakDuration(mins)}
+                      className={`rounded-xl border py-2 text-xs font-semibold transition ${
+                        breakDuration === mins
+                          ? 'border-brand-500 bg-gradient-to-r from-brand-500 to-plum-600 text-white shadow-xs'
+                          : 'border-brand-200 bg-white text-slate-700 hover:bg-brand-50'
+                      }`}
+                    >
+                      {mins} min
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label htmlFor="break-notes" className="label-field">
+                  Etiqueta / Motivo
+                </label>
+                <input
+                  id="break-notes"
+                  type="text"
+                  value={breakNotes}
+                  onChange={(event) => setBreakNotes(event.target.value)}
+                  placeholder="Descanso / Almuerzo"
+                  maxLength={120}
+                  className="input-field"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsBreakModalOpen(false)}
+                  className="btn-secondary px-5 py-2 text-xs"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingBreak}
+                  className="btn-primary px-5 py-2 text-xs disabled:opacity-60"
+                >
+                  {isSavingBreak && (
+                    <span
+                      className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"
+                      aria-hidden="true"
+                    />
+                  )}
+                  Guardar bloqueo
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <CancelAppointmentModal
+        appointment={appointmentToCancel}
+        isSubmitting={Boolean(appointmentToCancel && busyId === appointmentToCancel.id)}
+        onClose={() => setAppointmentToCancel(null)}
+        onConfirm={(target) => {
+          void handleStatusChange(target.id, 'cancelled');
+        }}
+      />
     </div>
   );
 }

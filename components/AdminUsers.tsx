@@ -1,23 +1,63 @@
 'use client';
 
 /**
- * Administracion de usuarios y roles (admin).
+ * Administracion de usuarios, roles y jornadas de empleados (admin).
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { apiRequest, getErrorMessage } from '@/lib/api';
 import { useAsyncData } from '@/lib/hooks/useAsyncData';
 import { useAuth, ROLE_LABELS } from '@/components/AuthProvider';
-import type { Role, UserProfile } from '@/lib/types';
+import { useToast } from '@/components/ToastProvider';
+import { extractPhoneFromAuthEmail } from '@/lib/format';
+import {
+  WEEK_DAYS,
+  normalizeBusinessHours,
+  normalizeEmployeeSchedule,
+  validateEmployeeScheduleAgainstSalon,
+} from '@/lib/schedule-utils';
+import type {
+  BusinessHour,
+  BusinessInfo,
+  EmployeeSchedule,
+  Role,
+  UserProfile,
+} from '@/lib/types';
 
 const ROLE_OPTIONS: Role[] = ['client', 'employee', 'admin'];
 
 export default function AdminUsers() {
   const { getIdToken } = useAuth();
+  const toast = useToast();
 
   const [message, setMessage] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ email: '', password: '', displayName: '', role: 'client' });
+  const [form, setForm] = useState({ phone: '', password: '', displayName: '', role: 'client' });
+
+  // Estado para configurar la jornada desde la ficha de un empleado
+  const [salonHours, setSalonHours] = useState<BusinessHour[]>(() => normalizeBusinessHours([]));
+  const [editingScheduleUser, setEditingScheduleUser] = useState<UserProfile | null>(null);
+  const [scheduleDraft, setScheduleDraft] = useState<EmployeeSchedule>(() =>
+    normalizeEmployeeSchedule(null),
+  );
+  const [savingSchedule, setSavingSchedule] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const loadBusiness = async () => {
+      try {
+        const data = await apiRequest<{ business: BusinessInfo }>('/business');
+        if (!active) return;
+        setSalonHours(normalizeBusinessHours(data.business?.hours));
+      } catch {
+        // Mantiene valores por defecto si falla
+      }
+    };
+    void loadBusiness();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const fetchUsers = useCallback(async (): Promise<UserProfile[]> => {
     const token = await getIdToken();
@@ -39,9 +79,12 @@ export default function AdminUsers() {
       const token = await getIdToken();
       await apiRequest(`/auth/users/${uid}/role`, { method: 'PATCH', token, body: { role } });
       setMessage('Rol actualizado correctamente.');
+      toast.success('Rol actualizado', 'El rol del usuario se actualizó correctamente.');
       await reload();
     } catch (requestError: unknown) {
-      setError(getErrorMessage(requestError, 'No fue posible actualizar el rol.'));
+      const errMsg = getErrorMessage(requestError, 'No fue posible actualizar el rol.');
+      setError(errMsg);
+      toast.error('Error al actualizar rol', errMsg);
     }
   };
 
@@ -55,13 +98,76 @@ export default function AdminUsers() {
       const token = await getIdToken();
       await apiRequest('/auth/users', { method: 'POST', token, body: form });
       setMessage('Usuario creado correctamente.');
-      setForm({ email: '', password: '', displayName: '', role: 'client' });
+      toast.success('Usuario creado', `Se registró a ${form.displayName} correctamente.`);
+      setForm({ phone: '', password: '', displayName: '', role: 'client' });
       await reload();
     } catch (requestError: unknown) {
-      setError(getErrorMessage(requestError, 'No fue posible crear el usuario.'));
+      const errMsg = getErrorMessage(requestError, 'No fue posible crear el usuario.');
+      setError(errMsg);
+      toast.error('Error al crear usuario', errMsg);
     } finally {
       setCreating(false);
     }
+  };
+
+  const openScheduleModal = (user: UserProfile) => {
+    setEditingScheduleUser(user);
+    setScheduleDraft(normalizeEmployeeSchedule(user.schedule));
+  };
+
+  const toggleDraftDay = (dayOfWeek: number) => {
+    setScheduleDraft((prev) => {
+      const exists = prev.workDays.includes(dayOfWeek);
+      return {
+        ...prev,
+        workDays: exists
+          ? prev.workDays.filter((d) => d !== dayOfWeek)
+          : [...prev.workDays, dayOfWeek],
+      };
+    });
+  };
+
+  const saveEmployeeSchedule = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editingScheduleUser) return;
+
+    const validation = validateEmployeeScheduleAgainstSalon(scheduleDraft, salonHours);
+    if (!validation.valid) {
+      toast.error('Jornada fuera de rango', validation.error);
+      return;
+    }
+
+    setSavingSchedule(true);
+    try {
+      const token = await getIdToken();
+      const uid = editingScheduleUser.id || editingScheduleUser.uid;
+      await apiRequest(`/auth/users/${uid}/schedule`, {
+        method: 'PATCH',
+        token,
+        body: { schedule: scheduleDraft },
+      });
+      toast.success(
+        'Jornada actualizada',
+        `Se guardó el turno de ${editingScheduleUser.displayName}.`,
+      );
+      setEditingScheduleUser(null);
+      await reload();
+    } catch (err: unknown) {
+      toast.error(
+        'Error al guardar jornada',
+        getErrorMessage(err, 'No fue posible actualizar la jornada del empleado.'),
+      );
+    } finally {
+      setSavingSchedule(false);
+    }
+  };
+
+  const formatEmployeeScheduleSummary = (user: UserProfile) => {
+    const sched = normalizeEmployeeSchedule(user.schedule);
+    const dayLabels = WEEK_DAYS.filter((d) => sched.workDays.includes(d.dayOfWeek)).map(
+      (d) => d.shortLabel,
+    );
+    return `${dayLabels.join(', ') || 'Sin días'} · ${sched.startTime} - ${sched.endTime}`;
   };
 
   return (
@@ -73,7 +179,7 @@ export default function AdminUsers() {
             type="search"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Buscar por nombre o correo..."
+            placeholder="Buscar por nombre o teléfono..."
             className="input-field max-w-xs"
             aria-label="Buscar usuarios"
           />
@@ -90,20 +196,23 @@ export default function AdminUsers() {
           <p className="text-sm text-slate-500">Cargando usuarios...</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[520px] text-left text-sm">
+            <table className="w-full min-w-[580px] text-left text-sm">
               <thead>
                 <tr className="border-b border-brand-100 text-xs uppercase tracking-wide text-slate-500">
                   <th className="py-2">Usuario</th>
-                  <th className="py-2">Correo</th>
+                  <th className="py-2">Teléfono / WhatsApp</th>
                   <th className="py-2">Rol</th>
+                  <th className="py-2">Jornada / Turno</th>
                 </tr>
               </thead>
               <tbody>
                 {users.map((user) => (
                   <tr key={user.id} className="border-b border-brand-50">
-                    <td className="py-2 font-medium text-slate-700">{user.displayName}</td>
-                    <td className="py-2 text-slate-500">{user.email}</td>
-                    <td className="py-2">
+                    <td className="py-2.5 font-medium text-slate-700">{user.displayName}</td>
+                    <td className="py-2.5 text-slate-500">
+                      {user.phone || extractPhoneFromAuthEmail(user.email) || user.email || '—'}
+                    </td>
+                    <td className="py-2.5">
                       <select
                         value={user.role}
                         onChange={(event) => changeRole(user.id, event.target.value)}
@@ -117,11 +226,29 @@ export default function AdminUsers() {
                         ))}
                       </select>
                     </td>
+                    <td className="py-2.5">
+                      {user.role === 'employee' ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs text-slate-600">
+                            {formatEmployeeScheduleSummary(user)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => openScheduleModal(user)}
+                            className="rounded-full border border-brand-200 bg-brand-50/60 px-2.5 py-1 text-[11px] font-semibold text-brand-700 transition hover:bg-brand-100"
+                          >
+                            Configurar jornada
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={3} className="py-6 text-center text-sm text-slate-500">
+                    <td colSpan={4} className="py-6 text-center text-sm text-slate-500">
                       No se encontraron usuarios.
                     </td>
                   </tr>
@@ -151,15 +278,17 @@ export default function AdminUsers() {
           </div>
 
           <div>
-            <label htmlFor="new-email" className="label-field">
-              Correo
+            <label htmlFor="new-phone" className="label-field">
+              Teléfono / WhatsApp
             </label>
             <input
-              id="new-email"
-              type="email"
+              id="new-phone"
+              type="tel"
+              inputMode="tel"
               className="input-field"
-              value={form.email}
-              onChange={(event) => setForm({ ...form, email: event.target.value })}
+              placeholder="3001234567"
+              value={form.phone}
+              onChange={(event) => setForm({ ...form, phone: event.target.value })}
               required
             />
           </div>
@@ -205,6 +334,130 @@ export default function AdminUsers() {
           </button>
         </form>
       </section>
+
+      {/* Modal de configuración de jornada de empleado */}
+      {editingScheduleUser && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-rose-950/40 p-4 backdrop-blur-xs"
+          onClick={() => {
+            if (!savingSchedule) setEditingScheduleUser(null);
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="employee-schedule-modal-title"
+        >
+          <div
+            className="w-full max-w-md animate-pop-in rounded-3xl border border-brand-100 bg-white p-6 shadow-chat"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="inline-block rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700">
+                  Ficha de empleado
+                </span>
+                <h3
+                  id="employee-schedule-modal-title"
+                  className="mt-2 font-display text-xl font-bold text-brand-800"
+                >
+                  Jornada de {editingScheduleUser.displayName}
+                </h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  Selecciona los días laborables y el horario de entrada y salida (dentro del horario general del salón).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingScheduleUser(null)}
+                aria-label="Cerrar modal"
+                className="rounded-full p-1.5 text-slate-400 transition hover:bg-brand-50 hover:text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={saveEmployeeSchedule} className="mt-5 space-y-4">
+              <div>
+                <p className="label-field">Días que labora</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {WEEK_DAYS.map((meta) => {
+                    const salonDay = salonHours.find((h) => h.dayOfWeek === meta.dayOfWeek);
+                    const salonOpen = Boolean(salonDay?.isOpen);
+                    const active = scheduleDraft.workDays.includes(meta.dayOfWeek);
+
+                    return (
+                      <button
+                        key={meta.dayOfWeek}
+                        type="button"
+                        disabled={!salonOpen && !active}
+                        onClick={() => toggleDraftDay(meta.dayOfWeek)}
+                        className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                          active
+                            ? 'border-brand-500 bg-gradient-to-r from-brand-500 to-plum-600 text-white shadow-xs'
+                            : salonOpen
+                              ? 'border-brand-200 bg-white text-slate-600 hover:bg-brand-50'
+                              : 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 opacity-60'
+                        }`}
+                      >
+                        {meta.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="modal-emp-start" className="label-field">
+                    Hora de entrada
+                  </label>
+                  <input
+                    id="modal-emp-start"
+                    type="time"
+                    value={scheduleDraft.startTime}
+                    onChange={(event) =>
+                      setScheduleDraft({ ...scheduleDraft, startTime: event.target.value })
+                    }
+                    required
+                    className="input-field"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="modal-emp-end" className="label-field">
+                    Hora de salida
+                  </label>
+                  <input
+                    id="modal-emp-end"
+                    type="time"
+                    value={scheduleDraft.endTime}
+                    onChange={(event) =>
+                      setScheduleDraft({ ...scheduleDraft, endTime: event.target.value })
+                    }
+                    required
+                    className="input-field"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingScheduleUser(null)}
+                  className="btn-secondary px-5 py-2 text-xs"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingSchedule}
+                  className="btn-primary px-5 py-2 text-xs disabled:opacity-60"
+                >
+                  Guardar jornada
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

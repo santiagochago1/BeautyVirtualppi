@@ -5,7 +5,16 @@
 
 export type Role = 'client' | 'employee' | 'admin';
 
-export type AppointmentStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled';
+export type AppointmentStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled' | 'blocked';
+
+export interface EmployeeSchedule {
+  /** Días de la semana que labora: 0 = Domingo, 1 = Lunes, ..., 6 = Sábado. */
+  workDays: number[];
+  /** Hora de entrada en formato `HH:mm` (ej. '09:00'). */
+  startTime: string;
+  /** Hora de salida en formato `HH:mm` (ej. '17:00'). */
+  endTime: string;
+}
 
 export interface UserProfile {
   id: string;
@@ -16,6 +25,7 @@ export interface UserProfile {
   phone?: string | null;
   role: Role;
   active?: boolean;
+  schedule?: EmployeeSchedule | null;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -55,6 +65,8 @@ export interface Appointment {
   employeeName: string | null;
   notes: string;
   status: AppointmentStatus;
+  /** Tipo de registro en la agenda: cita de cliente o bloqueo de descanso/pausa. */
+  appointmentType?: 'appointment' | 'break';
   createdAt: string;
   updatedAt: string;
   statusUpdatedBy?: string | null;
@@ -62,8 +74,31 @@ export interface Appointment {
 
 export interface BusinessHour {
   day: string;
+  /** Día numérico opcional (0 = Domingo, 1 = Lunes, ..., 6 = Sábado). */
+  dayOfWeek?: number;
+  /** Indica si el salón abre este día de la semana. */
+  isOpen?: boolean;
+  /** Hora de apertura (`HH:mm`). */
+  openTime?: string;
+  /** Hora de cierre (`HH:mm`). */
+  closeTime?: string;
+  /** Campos legados sincronizados para compatibilidad (`00:00` cuando está cerrado). */
   open: string;
   close: string;
+}
+
+export interface SpecialDate {
+  id?: string;
+  /** Fecha en formato `YYYY-MM-DD`. */
+  date: string;
+  /** `true` si el salón cierra todo el día. */
+  isClosed: boolean;
+  /** Hora de apertura especial si `isClosed` es `false`. */
+  customOpenTime?: string | null;
+  /** Hora de cierre especial si `isClosed` es `false`. */
+  customCloseTime?: string | null;
+  /** Motivo o etiqueta (ej. "Festivo", "Navidad"). */
+  note: string;
 }
 
 export interface BusinessPolicies {
@@ -89,6 +124,7 @@ export interface BusinessInfo {
   email: string;
   instagram: string;
   hours: BusinessHour[];
+  specialDates?: SpecialDate[];
   policies: BusinessPolicies;
   updatedAt: string | null;
   demoMode?: boolean;
@@ -132,6 +168,7 @@ export interface ApiErrorPayload {
 export interface AuthMeUser {
   uid: string;
   email: string | null;
+  phone?: string | null;
   name: string;
   role: Role;
   profile: UserProfile;

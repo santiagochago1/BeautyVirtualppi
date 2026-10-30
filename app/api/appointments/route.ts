@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticate } from '@/lib/server/auth';
 import { handle } from '@/lib/server/http';
-import { bookAppointment, listAppointmentsFor, type AppointmentFilters } from '@/lib/server/services/appointment';
+import {
+  bookAppointment,
+  blockEmployeeBreak,
+  listAppointmentsFor,
+  type AppointmentFilters,
+} from '@/lib/server/services/appointment';
 import { APPOINTMENT_STATUSES } from '@/lib/server/models/appointment';
 import type { AppointmentStatus } from '@/lib/types';
 
@@ -33,8 +38,22 @@ export async function POST(request: NextRequest) {
   const authorization = request.headers.get('authorization');
 
   return handle(async () => {
-    const user = await authenticate(authorization, { allowedRoles: ['client', 'admin'] });
+    const user = await authenticate(authorization, { allowedRoles: ['client', 'employee', 'admin'] });
     const body = await request.json().catch(() => ({}));
+
+    if (body.type === 'break' || body.appointmentType === 'break' || body.status === 'blocked') {
+      const { date, time, durationMinutes, notes, employeeId } = body;
+      const appointment = await blockEmployeeBreak({
+        actor: user!,
+        date,
+        time,
+        durationMinutes: Number(durationMinutes) || 60,
+        notes,
+        employeeId,
+      });
+      return NextResponse.json({ ok: true, appointment }, { status: 201 });
+    }
+
     const { serviceId, date, time, notes, employeeId } = body;
     const appointment = await bookAppointment({
       user: user!,

@@ -8,8 +8,20 @@
  */
 import { assertFirebaseReady } from '@/lib/server/firebase-admin';
 import { AppError } from '@/lib/server/errors';
-import { cleanString, isValidEmail } from '@/lib/server/validators';
-import type { Role, UserProfile } from '@/lib/types';
+import {
+  cleanString,
+  extractPhoneFromAuthEmail,
+  isValidEmail,
+  isValidPhone,
+  normalizePhone,
+  phoneToAuthEmail,
+} from '@/lib/server/validators';
+import { getBusinessInfo } from '@/lib/server/models/business-info';
+import {
+  normalizeEmployeeSchedule,
+  validateEmployeeScheduleAgainstSalon,
+} from '@/lib/schedule-utils';
+import type { EmployeeSchedule, Role, UserProfile } from '@/lib/types';
 
 export const ROLES: Role[] = ['client', 'employee', 'admin'];
 export const DEFAULT_ROLE: Role = 'client';
@@ -19,8 +31,14 @@ const USERS_COLLECTION = 'users';
 const sanitizeRole = (role: unknown): Role =>
   typeof role === 'string' && (ROLES as string[]).includes(role) ? (role as Role) : DEFAULT_ROLE;
 
-const serialize = (id: string, data: Record<string, unknown>): UserProfile =>
-  ({ id, ...data }) as UserProfile;
+const serialize = (id: string, data: Record<string, unknown>): UserProfile => {
+  const email = typeof data.email === 'string' ? data.email : null;
+  const phone =
+    (typeof data.phone === 'string' && data.phone.trim()) ||
+    extractPhoneFromAuthEmail(email) ||
+    null;
+  return { id, ...data, phone } as UserProfile;
+};
 
 /**
  * Obtiene el perfil del usuario; si no existe, lo crea con rol 'client'.
@@ -29,16 +47,20 @@ const serialize = (id: string, data: Record<string, unknown>): UserProfile =>
 export const getOrCreateUser = async ({
   uid,
   email,
+  phone = null,
   displayName,
   photoURL = null,
 }: {
   uid: string;
   email?: string | null;
+  phone?: string | null;
   displayName?: string | null;
   photoURL?: string | null;
 }): Promise<UserProfile> => {
   const db = assertFirebaseReady();
   if (!uid) throw new AppError('Identificador de usuario invalido.', 400);
+
+  const resolvedPhone = normalizePhone(phone) || extractPhoneFromAuthEmail(email) || null;
 
   const ref = db.collection(USERS_COLLECTION).doc(uid);
   const snapshot = await ref.get();
@@ -48,6 +70,7 @@ export const getOrCreateUser = async ({
     // Sincroniza datos basicos de Firebase Auth sin tocar el rol.
     const patch: Record<string, unknown> = {};
     if (email && data.email !== email) patch.email = email;
+    if (resolvedPhone && !data.phone) patch.phone = resolvedPhone;
     if (displayName && data.displayName !== displayName) patch.displayName = displayName;
     if (Object.keys(patch).length > 0) {
       patch.updatedAt = new Date().toISOString();
@@ -60,7 +83,8 @@ export const getOrCreateUser = async ({
   const profile = {
     uid,
     email: email || null,
-    displayName: cleanString(displayName, 120) || (email ? email.split('@')[0] : 'Usuario'),
+    phone: resolvedPhone,
+    displayName: cleanString(displayName, 120) || resolvedPhone || (email ? email.split('@')[0] : 'Usuario'),
     photoURL,
     role: DEFAULT_ROLE,
     active: true,
@@ -96,7 +120,7 @@ export const listUsers = async ({
     .filter((user: UserProfile) => (role ? user.role === role : true))
     .filter((user: UserProfile) =>
       needle
-        ? [user.displayName, user.email].some((field) =>
+        ? [user.displayName, user.phone, user.email].some((field) =>
             String(field || '').toLowerCase().includes(needle),
           )
         : true,
@@ -151,29 +175,80 @@ export const provisionUser = async ({
   photoURL = null,
 }: {
   uid: string;
-  email: string;
+  email?: string | null;
   displayName?: string | null;
   role?: Role;
   phone?: string | null;
   photoURL?: string | null;
 }): Promise<UserProfile> => {
   const db = assertFirebaseReady();
-  if (!isValidEmail(email)) throw new AppError('El correo electronico no es valido.', 400);
+  const cleanPhone = normalizePhone(phone) || extractPhoneFromAuthEmail(email) || null;
+  const resolvedEmail = email || (cleanPhone ? phoneToAuthEmail(cleanPhone) : '');
 
-  const profile = await getOrCreateUser({ uid, email, displayName, photoURL });
-  if (role !== profile.role) {
-    await db.collection(USERS_COLLECTION).doc(uid).update({
-      role: sanitizeRole(role),
-      updatedAt: new Date().toISOString(),
-    });
+  if (!cleanPhone && !isValidEmail(resolvedEmail)) {
+    throw new AppError('El numero de telefono no es valido.', 400);
   }
+  if (cleanPhone && !isValidPhone(cleanPhone)) {
+    throw new AppError('El numero de telefono no es valido.', 400);
+  }
+
+  const profile = await getOrCreateUser({
+    uid,
+    email: resolvedEmail,
+    phone: cleanPhone,
+    displayName,
+    photoURL,
+  });
+
+  const updates: Record<string, unknown> = {
+    role: sanitizeRole(role),
+    updatedAt: new Date().toISOString(),
+  };
+  if (cleanPhone) updates.phone = cleanPhone;
+  if (displayName) updates.displayName = cleanString(displayName, 120);
+
+  await db.collection(USERS_COLLECTION).doc(uid).set(updates, { merge: true });
 
   return serialize(uid, {
     ...profile,
-    email,
+    email: resolvedEmail,
     displayName: cleanString(displayName, 120) || profile.displayName,
     role: sanitizeRole(role),
-    phone,
+    phone: cleanPhone,
     photoURL,
   });
+};
+
+/**
+ * Actualiza el turno y jornada de trabajo de un empleado (admin),
+ * validando que no sobrepase el horario general del salón.
+ */
+export const updateEmployeeSchedule = async (
+  uid: string,
+  rawSchedule: Partial<EmployeeSchedule>,
+): Promise<UserProfile> => {
+  const db = assertFirebaseReady();
+  if (!uid) throw new AppError('Usuario invalido.', 400);
+
+  const ref = db.collection(USERS_COLLECTION).doc(uid);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) throw new AppError('El profesional no existe.', 404);
+
+  const data = snapshot.data() as Record<string, unknown>;
+  const schedule = normalizeEmployeeSchedule({
+    workDays: Array.isArray(rawSchedule?.workDays) ? rawSchedule.workDays : [],
+    startTime: String(rawSchedule?.startTime || ''),
+    endTime: String(rawSchedule?.endTime || ''),
+  });
+
+  const business = await getBusinessInfo();
+  const validation = validateEmployeeScheduleAgainstSalon(schedule, business.hours);
+  if (!validation.valid) {
+    throw new AppError(validation.error || 'El horario del profesional no es válido.', 400);
+  }
+
+  const updatedAt = new Date().toISOString();
+  await ref.update({ schedule, updatedAt });
+
+  return serialize(uid, { ...data, schedule, updatedAt });
 };

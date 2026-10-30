@@ -109,3 +109,63 @@ export const buildTimeSlots = (from = '08:00', to = '18:00', stepMinutes = 30): 
 
   return slots;
 };
+
+const SYNTHETIC_EMAIL_DOMAIN = 'telefono.beautyvirtual.local';
+
+/** Normaliza un numero de telefono dejando solo los digitos locales (sin +57 inicial si tiene 12 digitos). */
+export const normalizePhone = (value: unknown): string => {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('57')) {
+    return digits.slice(2);
+  }
+  return digits;
+};
+
+/** Valida que el telefono contenga entre 7 y 15 digitos (ej. 3001234567). */
+export const isValidPhone = (value: unknown): boolean => {
+  const clean = normalizePhone(value);
+  return /^\d{7,15}$/.test(clean);
+};
+
+/** Convierte un telefono en un identificador compatible con Firebase Auth. */
+export const phoneToAuthEmail = (phoneOrIdentifier: string): string => {
+  const trimmed = String(phoneOrIdentifier ?? '').trim();
+  if (trimmed.includes('@')) return trimmed.toLowerCase();
+  const clean = normalizePhone(trimmed);
+  return `${clean}@${SYNTHETIC_EMAIL_DOMAIN}`;
+};
+
+/** Extrae el telefono si el correo proviene de un identificador sintetico. */
+export const extractPhoneFromAuthEmail = (email: string | null | undefined): string | null => {
+  if (!email || typeof email !== 'string') return null;
+  const lower = email.trim().toLowerCase();
+  if (lower.endsWith(`@${SYNTHETIC_EMAIL_DOMAIN}`)) {
+    return lower.split('@')[0] || null;
+  }
+  return null;
+};
+
+/** Construye el enlace de confirmacion de cita por WhatsApp (`https://wa.me/57...`). */
+export const buildWhatsAppConfirmUrl = ({
+  phone,
+  clientName,
+  serviceName,
+  date,
+  time,
+}: {
+  phone?: string | null;
+  clientName: string;
+  serviceName?: string;
+  date?: string;
+  time?: string;
+}): string => {
+  const cleanPhone = normalizePhone(phone);
+  const name = (clientName || 'cliente').trim();
+  const details =
+    serviceName && date && time
+      ? ` para confirmar tu cita de ${serviceName} el día ${formatLongDate(date)} a las ${formatTime(time)}.`
+      : ' para confirmar los detalles de tu cita.';
+  const message = `Hola ${name}, te saludamos de Beauty Virtual${details}`;
+  const phonePath = cleanPhone ? `57${cleanPhone}` : '';
+  return `https://wa.me/${phonePath}?text=${encodeURIComponent(message)}`;
+};

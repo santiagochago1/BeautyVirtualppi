@@ -19,6 +19,7 @@ const logger = createLogger('auth');
 export interface AuthUser {
   uid: string;
   email: string | null;
+  phone: string | null;
   name: string;
   role: Role;
   profile: UserProfile;
@@ -91,6 +92,7 @@ export const authenticate = async (
   return {
     uid: decoded.uid,
     email: decoded.email || profile.email || null,
+    phone: profile.phone || null,
     name: profile.displayName || decoded.name || 'Usuario',
     role,
     profile,

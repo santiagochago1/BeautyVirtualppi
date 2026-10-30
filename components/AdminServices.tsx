@@ -7,6 +7,7 @@ import { useCallback, useState } from 'react';
 import { apiRequest, getErrorMessage } from '@/lib/api';
 import { useAsyncData } from '@/lib/hooks/useAsyncData';
 import { useAuth } from '@/components/AuthProvider';
+import { useToast } from '@/components/ToastProvider';
 import { formatCurrency } from '@/lib/format';
 import type { Service } from '@/lib/types';
 
@@ -30,6 +31,7 @@ const EMPTY_FORM: ServiceForm = {
 
 export default function AdminServices() {
   const { getIdToken } = useAuth();
+  const toast = useToast();
 
   const [message, setMessage] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -70,16 +72,20 @@ export default function AdminServices() {
       if (editingId) {
         await apiRequest(`/services/${editingId}`, { method: 'PUT', token, body: payload });
         setMessage('Servicio actualizado.');
+        toast.success('Servicio actualizado', `"${payload.name}" se actualizó correctamente en el catálogo.`);
       } else {
         await apiRequest('/services', { method: 'POST', token, body: payload });
         setMessage('Servicio creado.');
+        toast.success('Servicio guardado', `"${payload.name}" se agregó exitosamente al catálogo.`);
       }
 
       setForm(EMPTY_FORM);
       setEditingId(null);
       await reload();
     } catch (requestError: unknown) {
-      setError(getErrorMessage(requestError, 'No fue posible guardar el servicio.'));
+      const errMsg = getErrorMessage(requestError, 'No fue posible guardar el servicio.');
+      setError(errMsg);
+      toast.error('Error al guardar servicio', errMsg);
     } finally {
       setIsSaving(false);
     }
@@ -87,16 +93,24 @@ export default function AdminServices() {
 
   const toggleActive = async (service: Service) => {
     setError(null);
+    const nextActive = !(service.active !== false);
     try {
       const token = await getIdToken();
       await apiRequest(`/services/${service.id}`, {
         method: 'PUT',
         token,
-        body: { active: !(service.active !== false) },
+        body: { active: nextActive },
       });
+      if (nextActive) {
+        toast.success('Servicio activado', `"${service.name}" está nuevamente visible en el catálogo.`);
+      } else {
+        toast.warning('Servicio desactivado', `"${service.name}" fue desactivado del catálogo público.`);
+      }
       await reload();
     } catch (requestError: unknown) {
-      setError(getErrorMessage(requestError, 'No fue posible actualizar el servicio.'));
+      const errMsg = getErrorMessage(requestError, 'No fue posible actualizar el servicio.');
+      setError(errMsg);
+      toast.error('Error al actualizar servicio', errMsg);
     }
   };
 

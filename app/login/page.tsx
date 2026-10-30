@@ -26,13 +26,14 @@ function LoginForm() {
   const searchParams = useSearchParams();
   const nextPath = searchParams.get('next') || '/dashboard';
 
-  const { signIn, signUp, isConfigured, loading: authLoading } = useAuth();
+  const { signIn, signUp, signOut, isConfigured, loading: authLoading } = useAuth();
 
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [isClient, setIsClient] = useState(false);
@@ -41,28 +42,38 @@ function LoginForm() {
     setIsClient(true);
   }, []);
 
-
   const isRegister = mode === 'register';
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
+    setSuccessMessage(null);
     setIsSubmitting(true);
 
     try {
       if (isRegister) {
-        await signUp(name, email, password);
+        await signUp(name, phone, password);
+        await signOut();
+        setPassword('');
+        setMode('login');
+        setSuccessMessage('¡Cuenta creada exitosamente! Ahora inicia sesión con tu teléfono y contraseña.');
       } else {
-        await signIn(email, password);
+        await signIn(phone, password);
+        router.push(nextPath);
       }
-      router.push(nextPath);
     } catch (authError: unknown) {
       const code = getAuthErrorCode(authError);
-      if (code === 'auth/invalid-credential') setError('Correo o contraseña incorrectos.');
-      else if (code === 'auth/email-already-in-use') setError('Ese correo ya tiene una cuenta registrada.');
-      else if (code === 'auth/weak-password') setError('La contraseña debe tener al menos 6 caracteres.');
-      else if (code === 'auth/too-many-requests') setError('Demasiados intentos. Espera unos minutos e intenta de nuevo.');
-      else setError(getErrorMessage(authError, 'No pudimos completar la operacion. Intenta de nuevo.'));
+      if (code === 'auth/invalid-credential' || code === 'auth/user-not-found' || code === 'auth/wrong-password') {
+        setError('Teléfono o contraseña incorrectos.');
+      } else if (code === 'auth/email-already-in-use') {
+        setError('Ese número de teléfono ya tiene una cuenta registrada.');
+      } else if (code === 'auth/weak-password') {
+        setError('La contraseña debe tener al menos 6 caracteres.');
+      } else if (code === 'auth/too-many-requests') {
+        setError('Demasiados intentos. Espera unos minutos e intenta de nuevo.');
+      } else {
+        setError(getErrorMessage(authError, 'No pudimos completar la operacion. Intenta de nuevo.'));
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -122,18 +133,19 @@ function LoginForm() {
           )}
 
           <div>
-            <label htmlFor="email" className="label-field">
-              Correo electronico
+            <label htmlFor="phone" className="label-field">
+              {isRegister ? 'Teléfono / WhatsApp' : 'Teléfono'}
             </label>
             <input
-              id="email"
-              type="email"
+              id="phone"
+              type="tel"
+              inputMode="tel"
               required
-              autoComplete="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              autoComplete="tel"
+              value={phone}
+              onChange={(event) => setPhone(event.target.value)}
               className="input-field"
-              placeholder="tucorreo@ejemplo.com"
+              placeholder="3001234567"
             />
           </div>
 
@@ -154,6 +166,12 @@ function LoginForm() {
             />
           </div>
 
+          {successMessage && (
+            <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+              {successMessage}
+            </p>
+          )}
+
           {error && (
             <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>
           )}
@@ -173,6 +191,7 @@ function LoginForm() {
             onClick={() => {
               setMode(isRegister ? 'login' : 'register');
               setError(null);
+              setSuccessMessage(null);
             }}
             className="font-semibold text-brand-700 underline"
           >

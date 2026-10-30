@@ -11,6 +11,7 @@ import { assertFirebaseReady } from '@/lib/server/firebase-admin';
 import { AppError } from '@/lib/server/errors';
 import { cleanString } from '@/lib/server/validators';
 import { isValidDate, isValidTime, salonStartToIso } from '@/lib/server/datetime';
+import { intervalsOverlap, isBreakAppointment, parseTimeToMinutes } from '@/lib/schedule-utils';
 import type { Appointment, AppointmentStats, AppointmentStatus } from '@/lib/types';
 
 const APPOINTMENTS_COLLECTION = 'appointments';
@@ -20,6 +21,7 @@ export const APPOINTMENT_STATUSES: AppointmentStatus[] = [
   'confirmed',
   'completed',
   'cancelled',
+  'blocked',
 ];
 
 export const STATUS_LABELS: Record<AppointmentStatus, string> = {
@@ -27,6 +29,7 @@ export const STATUS_LABELS: Record<AppointmentStatus, string> = {
   confirmed: 'Confirmada',
   completed: 'Completada',
   cancelled: 'Cancelada',
+  blocked: 'Bloqueo / Descanso',
 };
 
 const serialize = (id: string, data: Record<string, unknown>): Appointment =>
@@ -89,11 +92,16 @@ export const createAppointment = async ({
   }
   // ----------------------------------------
 
-  const conflict = await findConflict({ date, time, employeeId });
+  const conflict = await findConflict({
+    date,
+    time,
+    durationMinutes: Number(durationMinutes) || 60,
+    employeeId,
+  });
   if (conflict) {
     throw new AppError(
       employeeId
-        ? 'El profesional seleccionado no está disponible en ese horario'
+        ? 'El profesional seleccionado no está disponible en ese horario (tiene otra cita o un descanso programado).'
         : 'Ese horario ya esta tomado. Por favor elige otra hora.',
       409,
     );
@@ -116,6 +124,7 @@ export const createAppointment = async ({
     employeeName: cleanString(employeeName, 120),
     notes: cleanString(notes, 500),
     status: 'pending' as AppointmentStatus,
+    appointmentType: 'appointment' as const,
     createdAt: now,
     updatedAt: now,
   };
@@ -125,30 +134,144 @@ export const createAppointment = async ({
   return { id: ref.id, ...payload };
 };
 
-/** Busca un conflicto de agenda para un profesional (o global si no hay). */
+export interface CreateBreakBlockInput {
+  employeeId: string;
+  employeeName: string;
+  date: string;
+  time: string;
+  durationMinutes: number;
+  notes?: string;
+  createdByUid?: string;
+}
+
+/**
+ * Registra un bloqueo de descanso / pausa para un profesional en la colección `appointments`
+ * con estado `'blocked'` y tipo `'break'`, sin cliente asociado.
+ */
+export const createBreakBlock = async ({
+  employeeId,
+  employeeName,
+  date,
+  time,
+  durationMinutes = 60,
+  notes = '',
+  createdByUid = '',
+}: CreateBreakBlockInput): Promise<Appointment> => {
+  const db = assertFirebaseReady();
+
+  if (!isValidDate(date)) throw new AppError('La fecha del descanso no es válida.', 400);
+  if (!isValidTime(time)) throw new AppError('La hora de inicio del descanso no es válida.', 400);
+
+  const duration = Math.max(15, Math.min(240, Number(durationMinutes) || 60));
+  const startsAt = salonStartToIso(date, time);
+  if (!startsAt) throw new AppError('No fue posible interpretar la fecha y hora del descanso.', 400);
+
+  const conflict = await findConflict({
+    date,
+    time,
+    durationMinutes: duration,
+    employeeId,
+  });
+
+  if (conflict) {
+    throw new AppError(
+      `El horario ${time} (${duration} min) se cruza con otra cita o descanso asignado (${conflict.time} - ${conflict.serviceName}).`,
+      409,
+    );
+  }
+
+  const now = new Date().toISOString();
+  const payload = {
+    userId: createdByUid || employeeId,
+    userName: '',
+    userEmail: '',
+    userPhone: '',
+    serviceId: 'break',
+    serviceName: 'Descanso / Almuerzo',
+    servicePrice: 0,
+    durationMinutes: duration,
+    date,
+    time,
+    startsAt,
+    employeeId,
+    employeeName: cleanString(employeeName, 120),
+    notes: cleanString(notes, 300) || 'Descanso / Almuerzo',
+    status: 'blocked' as AppointmentStatus,
+    appointmentType: 'break' as const,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const ref = db.collection(APPOINTMENTS_COLLECTION).doc();
+  await ref.set(payload);
+  return { id: ref.id, ...payload };
+};
+
+/**
+ * Busca un conflicto de agenda para un profesional (o global si no hay),
+ * comprobando solapamiento real de rangos de tiempo (`[start, start + duration)`).
+ */
 export const findConflict = async ({
   date,
   time,
+  durationMinutes = 60,
   employeeId = null,
 }: {
   date: string;
   time: string;
+  durationMinutes?: number;
   employeeId?: string | null;
 }): Promise<Appointment | null> => {
   const db = assertFirebaseReady();
   // Consulta de igualdad en un solo campo: no requiere indices compuestos.
   const snapshot = await db.collection(APPOINTMENTS_COLLECTION).where('date', '==', date).get();
 
+  const targetStart = parseTimeToMinutes(time);
+  const targetDuration = Math.max(15, Number(durationMinutes) || 60);
+  const targetEnd = targetStart !== null ? targetStart + targetDuration : null;
+
   return (
     snapshot.docs
       .map((doc) => serialize(doc.id, doc.data() as Record<string, unknown>))
-      .find(
-        (appointment: Appointment) =>
-          appointment.time === time &&
-          appointment.status !== 'cancelled' &&
-          (employeeId ? appointment.employeeId === employeeId : true),
-      ) || null
+      .find((appointment: Appointment) => {
+        if (appointment.status === 'cancelled') return false;
+        if (employeeId && appointment.employeeId !== employeeId) return false;
+
+        const existingStart = parseTimeToMinutes(appointment.time);
+        const existingDuration = Math.max(15, Number(appointment.durationMinutes) || 60);
+
+        if (targetStart !== null && targetEnd !== null && existingStart !== null) {
+          return intervalsOverlap(
+            targetStart,
+            targetEnd,
+            existingStart,
+            existingStart + existingDuration,
+          );
+        }
+
+        return appointment.time === time;
+      }) || null
   );
+};
+
+/** Lista las franjas ocupadas (citas activas y descansos) para una fecha y profesional. */
+export const listOccupiedByDate = async ({
+  date,
+  employeeId = null,
+}: {
+  date: string;
+  employeeId?: string | null;
+}): Promise<Appointment[]> => {
+  const db = assertFirebaseReady();
+  if (!isValidDate(date)) return [];
+  const snapshot = await db.collection(APPOINTMENTS_COLLECTION).where('date', '==', date).get();
+
+  return snapshot.docs
+    .map((doc) => serialize(doc.id, doc.data() as Record<string, unknown>))
+    .filter(
+      (item: Appointment) =>
+        item.status !== 'cancelled' && (employeeId ? item.employeeId === employeeId : true),
+    );
 };
 
 /** Citas de un cliente. */
@@ -281,6 +404,7 @@ export const assignEmployee = async (
     const conflict = await findConflict({
       date: String(current.date),
       time: String(current.time),
+      durationMinutes: Number(current.durationMinutes) || 60,
       employeeId,
     });
     if (conflict && conflict.id !== id) {
@@ -302,12 +426,16 @@ export const assignEmployee = async (
 export const getAppointmentStats = async (): Promise<AppointmentStats> => {
   const db = assertFirebaseReady();
   const snapshot = await db.collection(APPOINTMENTS_COLLECTION).get();
-  const list = snapshot.docs.map((doc) => serialize(doc.id, doc.data() as Record<string, unknown>));
+  const allItems = snapshot.docs.map((doc) => serialize(doc.id, doc.data() as Record<string, unknown>));
+  const list = allItems.filter((item) => !isBreakAppointment(item));
 
-  const byStatus = APPOINTMENT_STATUSES.reduce<Record<AppointmentStatus, number>>((acc, status) => {
-    acc[status] = list.filter((item: Appointment) => item.status === status).length;
-    return acc;
-  }, { pending: 0, confirmed: 0, completed: 0, cancelled: 0 });
+  const byStatus = APPOINTMENT_STATUSES.reduce<Record<AppointmentStatus, number>>(
+    (acc, status) => {
+      acc[status] = allItems.filter((item: Appointment) => item.status === status).length;
+      return acc;
+    },
+    { pending: 0, confirmed: 0, completed: 0, cancelled: 0, blocked: 0 },
+  );
 
   const billed = list
     .filter((item: Appointment) => item.status === 'completed')

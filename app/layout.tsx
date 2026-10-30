@@ -1,6 +1,7 @@
 import './globals.css';
 import { Inter, Playfair_Display } from 'next/font/google';
 import AuthProvider from '@/components/AuthProvider';
+import ToastProvider from '@/components/ToastProvider';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import ChatbotWidget from '@/components/ChatbotWidget';
@@ -35,16 +36,18 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="es" className={`${inter.variable} ${playfair.variable}`}>
+    <html lang="es" data-scroll-behavior="smooth" className={`${inter.variable} ${playfair.variable}`}>
       <body className="min-h-screen bg-white">
         <AuthProvider>
-          <div className="flex min-h-screen flex-col">
-            <Navbar />
-            <main className="flex-1">{children}</main>
-            <Footer />
-          </div>
-          {/* Asistente virtual flotante disponible en todo el sitio */}
-          <ChatbotWidget />
+          <ToastProvider>
+            <div className="flex min-h-screen flex-col">
+              <Navbar />
+              <main className="flex-1">{children}</main>
+              <Footer />
+            </div>
+            {/* Asistente virtual flotante disponible en todo el sitio */}
+            <ChatbotWidget />
+          </ToastProvider>
         </AuthProvider>
       </body>
     </html>

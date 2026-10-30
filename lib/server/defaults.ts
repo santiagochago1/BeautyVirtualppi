@@ -24,14 +24,15 @@ export const DEFAULT_BUSINESS_INFO: BusinessInfo = {
   email: 'contacto@beautysalon.co',
   instagram: '@beautysalon',
   hours: [
-    { day: 'Lunes', open: '08:00', close: '18:00' },
-    { day: 'Martes', open: '08:00', close: '18:00' },
-    { day: 'Miercoles', open: '08:00', close: '18:00' },
-    { day: 'Jueves', open: '08:00', close: '18:00' },
-    { day: 'Viernes', open: '08:00', close: '19:00' },
-    { day: 'Sabado', open: '09:00', close: '17:00' },
-    { day: 'Domingo', open: '00:00', close: '00:00' },
+    { day: 'Lunes', dayOfWeek: 1, isOpen: true, openTime: '08:00', closeTime: '18:00', open: '08:00', close: '18:00' },
+    { day: 'Martes', dayOfWeek: 2, isOpen: true, openTime: '08:00', closeTime: '18:00', open: '08:00', close: '18:00' },
+    { day: 'Miercoles', dayOfWeek: 3, isOpen: true, openTime: '08:00', closeTime: '18:00', open: '08:00', close: '18:00' },
+    { day: 'Jueves', dayOfWeek: 4, isOpen: true, openTime: '08:00', closeTime: '18:00', open: '08:00', close: '18:00' },
+    { day: 'Viernes', dayOfWeek: 5, isOpen: true, openTime: '08:00', closeTime: '19:00', open: '08:00', close: '19:00' },
+    { day: 'Sabado', dayOfWeek: 6, isOpen: true, openTime: '09:00', closeTime: '17:00', open: '09:00', close: '17:00' },
+    { day: 'Domingo', dayOfWeek: 0, isOpen: false, openTime: '09:00', closeTime: '15:00', open: '00:00', close: '00:00' },
   ],
+  specialDates: [],
   policies: {
     cancellation:
       'Las citas se pueden cancelar o reprogramar hasta 12 horas antes de la hora agendada.',

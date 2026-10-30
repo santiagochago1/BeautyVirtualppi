@@ -8,9 +8,11 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import AdminUsers from '@/components/AdminUsers';
 import AdminServices from '@/components/AdminServices';
 import AdminReports from '@/components/AdminReports';
+import AdminSchedules from '@/components/AdminSchedules';
 
 const TABS = [
   { id: 'reports', label: 'Reportes' },
+  { id: 'schedules', label: 'Horarios y Turnos' },
   { id: 'users', label: 'Usuarios' },
   { id: 'services', label: 'Servicios' },
 ];
@@ -23,10 +25,12 @@ function AdminPanel() {
       <header className="mb-8">
         <p className="text-xs font-semibold uppercase tracking-wide text-brand-600">Administrador</p>
         <h1 className="mt-1 font-display text-3xl font-bold text-brand-800">Panel de control</h1>
-        <p className="mt-2 text-slate-600">Gestion de usuarios, catalogo de servicios y reportes de citas y pagos.</p>
+        <p className="mt-2 text-slate-600">
+          Gestión de horarios, turnos de profesionales, usuarios, catálogo de servicios y reportes.
+        </p>
       </header>
 
-      <div className="mb-6 flex w-fit gap-2 rounded-full border border-brand-100 bg-white p-1">
+      <div className="mb-6 flex flex-wrap w-fit gap-2 rounded-full border border-brand-100 bg-white p-1">
         {TABS.map((item) => (
           <button
             key={item.id}
@@ -42,6 +46,7 @@ function AdminPanel() {
       </div>
 
       {tab === 'reports' && <AdminReports />}
+      {tab === 'schedules' && <AdminSchedules />}
       {tab === 'users' && <AdminUsers />}
       {tab === 'services' && <AdminServices />}
     </div>
